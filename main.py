@@ -24,7 +24,7 @@ import os
 
 if platform not in ("android", "ios"):
     Window.size = (360, 740)
-Window.clearcolor = (0.2, 0.16, 0.3, 1)
+Window.clearcolor = (0.40, 0.78, 0.98, 1)
 
 def asset(name):
     base = os.path.dirname(os.path.abspath(__file__))
@@ -32,6 +32,27 @@ def asset(name):
         if os.path.exists(p):
             return p
     return os.path.join(base, "assets", name)
+
+from kivy.core.text import LabelBase
+UI_FONT = "Roboto"
+try:
+    _ff = asset("fonts/Fredoka-Bold.ttf")
+    if os.path.exists(_ff):
+        LabelBase.register(name="Fredoka", fn_regular=_ff)
+        UI_FONT = "Fredoka"
+except Exception:
+    pass
+
+class OutlinedLabel(Label):
+    def __init__(self, **kw):
+        ow = kw.pop("outline_width", 2)
+        oc = kw.pop("outline_color", (0, 0, 0, 1))
+        kw.setdefault("color", (1, 1, 1, 1))
+        kw.setdefault("font_name", UI_FONT)
+        kw.setdefault("bold", True)
+        super().__init__(**kw)
+        self.outline_width = ow
+        self.outline_color = oc
 
 def do_vibrate(ms=30):
     try:
@@ -260,22 +281,63 @@ TRAILS = {
 }
 
 class Btn(Button):
-    def __init__(self, bg=(0.45, 0.4, 0.8, 1), **kw):
+    """Bright button: shadow + outline + press scale animation."""
+    def __init__(self, bg=(0.35, 0.65, 1.0, 1), **kw):
         super().__init__(**kw)
         self.background_normal = self.background_down = ""
-        self.background_color = bg
+        self.background_color = (0, 0, 0, 0)
         self.color = (1, 1, 1, 1)
         self.font_size = sp(15)
         self.bold = True
+        self.font_name = UI_FONT
+        self.outline_width = 2
+        self.outline_color = (0.05, 0.05, 0.12, 1)
+        self._bg = list(bg)
+        with self.canvas.before:
+            # soft shadow
+            Color(0, 0, 0, 0.28)
+            self._shadow = RoundedRectangle(radius=[dp(14)])
+            # dark outline
+            Color(0.08, 0.08, 0.14, 1)
+            self._border = RoundedRectangle(radius=[dp(14)])
+            # fill
+            Color(*bg)
+            self._fill = RoundedRectangle(radius=[dp(12)])
+        self.bind(pos=self._upd_btn, size=self._upd_btn)
+        self.bind(on_press=self._anim_down, on_release=self._anim_up)
+
+    def _upd_btn(self, *a):
+        sh = 4 if not getattr(self, "_pressed", False) else 1
+        self._shadow.pos = (self.x + 2, self.y - sh)
+        self._shadow.size = (self.width, self.height)
+        self._border.pos = (self.x - 2, self.y - 2)
+        self._border.size = (self.width + 4, self.height + 4)
+        self._fill.pos = self.pos
+        self._fill.size = self.size
+
+    def _anim_down(self, *a):
+        self._pressed = True
+        from kivy.animation import Animation
+        Animation(opacity=0.85, duration=0.06, t="out_quad").start(self)
+        self._upd_btn()
+
+    def _anim_up(self, *a):
+        self._pressed = False
+        from kivy.animation import Animation
+        Animation(opacity=1, duration=0.1, t="out_quad").start(self)
+        self._upd_btn()
 
 class NavBtn(Button):
     def __init__(self, **kw):
         super().__init__(**kw)
         self.background_normal = self.background_down = ""
         self.background_color = (0, 0, 0, 0)
-        self.color = (0.8, 0.75, 0.95, 1)
+        self.color = (1, 1, 1, 1)
         self.font_size = sp(14)
         self.bold = True
+        self.font_name = UI_FONT
+        self.outline_width = 2
+        self.outline_color = (0, 0, 0, 1)
 
 class LevelCard(Button):
     def __init__(self, lv, th, unlocked, **kw):
@@ -316,7 +378,7 @@ class LoadingScreen(Screen):
         super().__init__(**kw)
         root = FloatLayout()
         with root.canvas.before:
-            Color(0.18, 0.14, 0.3, 1)
+            Color(0.40, 0.78, 0.98, 1)
             self.bg = Rectangle()
             Color(0.55, 0.4, 0.95, 0.14)
             self.c1 = Ellipse()
@@ -375,9 +437,9 @@ class MainScreen(Screen):
         col.add_widget(self.body)
         self.nav = BoxLayout(size_hint=(1, None), height=dp(66), padding=[dp(6), dp(6)], spacing=dp(4))
         with self.nav.canvas.before:
-            Color(0.22, 0.18, 0.38, 1)
+            Color(0.25, 0.55, 0.95, 1)
             self.nbg = Rectangle()
-            Color(0.75, 0.55, 1, 0.55)
+            Color(1, 1, 1, 0.35)
             self.nln = Rectangle(size=(0, 3))
         self.nav.bind(pos=self._nu, size=self._nu)
         self.bs = NavBtn(text="SHOP")
@@ -391,7 +453,7 @@ class MainScreen(Screen):
         col.add_widget(self.nav)
         self.add_widget(col)
         with self.canvas.before:
-            Color(0.2, 0.16, 0.3, 1)
+            Color(0.40, 0.78, 0.98, 1)
             self.sbg = Rectangle()
         self.bind(pos=lambda *a: (setattr(self.sbg, "pos", self.pos), setattr(self.sbg, "size", self.size)),
                   size=lambda *a: (setattr(self.sbg, "pos", self.pos), setattr(self.sbg, "size", self.size)))
@@ -438,51 +500,45 @@ class MainScreen(Screen):
             self.bt.color = (0.75, 0.85, 1, 1)
             self.data = load_data()
             self._refresh_accounts()
+            if hasattr(self, "_sync_set_btns"):
+                self._sync_set_btns()
 
     def _shop(self):
-        root = BoxLayout(orientation="vertical", padding=[dp(12), dp(8), dp(12), dp(4)], spacing=dp(6))
-        head = BoxLayout(size_hint=(1, None), height=dp(42))
-        head.add_widget(Label(text="SHOP", font_size=sp(22), bold=True, color=(1, 0.9, 0.4, 1),
-                              size_hint=(0.4, 1), halign="left"))
-        self.cups_l = Label(text="Cups: 0", font_size=sp(16), bold=True, color=(1, 0.88, 0.35, 1),
-                            size_hint=(0.6, 1), halign="right")
+        root = BoxLayout(orientation="vertical", padding=[dp(12), dp(10), dp(12), dp(6)], spacing=dp(8))
+        head = BoxLayout(size_hint=(1, None), height=dp(44))
+        head.add_widget(OutlinedLabel(text="МАГАЗИН", font_size=sp(24), size_hint=(0.5, 1),
+                                      halign="left", valign="middle"))
+        self.cups_l = OutlinedLabel(text="Cups: 0", font_size=sp(16), size_hint=(0.5, 1),
+                                    color=(1, 0.92, 0.35, 1), halign="right", valign="middle")
         self.cups_l.bind(size=self.cups_l.setter("text_size"))
         head.add_widget(self.cups_l)
         root.add_widget(head)
 
         sc = ScrollView(size_hint=(1, 1), do_scroll_x=False, bar_width=dp(4))
-        self.sbox = BoxLayout(orientation="vertical", size_hint_y=None, spacing=dp(8),
-                              padding=[0, 0, 0, dp(20)])
+        self.sbox = GridLayout(cols=2, size_hint_y=None, spacing=dp(10),
+                               padding=[dp(4), dp(4), dp(4), dp(16)], row_default_height=dp(130),
+                               row_force_default=True)
         self.sbox.bind(minimum_height=self.sbox.setter("height"))
         sc.add_widget(self.sbox)
         root.add_widget(sc)
 
-        # Promo block — always at the very bottom of SHOP
-        promo_box = BoxLayout(orientation="vertical", size_hint=(1, None),
-                              height=dp(100), spacing=dp(4), padding=[0, dp(4), 0, dp(2)])
-        promo_box.add_widget(Label(
-            text="Промокод", font_size=sp(13), bold=True,
-            color=(0.85, 0.8, 1, 1), size_hint=(1, None), height=dp(20)
-        ))
-        prow = BoxLayout(size_hint=(1, None), height=dp(44), spacing=dp(8))
+        promo_box = BoxLayout(orientation="vertical", size_hint=(1, None), height=dp(96), spacing=dp(4))
+        promo_box.add_widget(OutlinedLabel(text="Промокод", font_size=sp(13), size_hint=(1, None), height=dp(20)))
+        prow = BoxLayout(size_hint=(1, None), height=dp(42), spacing=dp(8))
         self.code_in = TextInput(
             hint_text="Введи код...", multiline=False, font_size=sp(14),
-            size_hint=(0.58, 1), background_color=(0.25, 0.2, 0.4, 1),
+            size_hint=(0.55, 1), background_color=(0.2, 0.45, 0.85, 1),
             foreground_color=(1, 1, 1, 1), cursor_color=(1, 1, 1, 1),
             padding=[dp(10), dp(10)]
         )
         prow.add_widget(self.code_in)
-        okb = Btn(text="Активировать", bg=(0.35, 0.72, 0.42, 1), size_hint=(0.42, 1))
-        okb.font_size = sp(13)
+        okb = Btn(text="Активировать", bg=(0.3, 0.85, 0.45, 1), size_hint=(0.45, 1))
+        okb.font_size = sp(12)
         okb.bind(on_press=self._code)
         prow.add_widget(okb)
         promo_box.add_widget(prow)
-        self.code_msg = Label(
-            text="", font_size=sp(12),
-            color=(1, 0.85, 0.4, 1), size_hint=(1, None), height=dp(22),
-            halign="center"
-        )
-        self.code_msg.bind(size=self.code_msg.setter("text_size"))
+        self.code_msg = OutlinedLabel(text="", font_size=sp(12), size_hint=(1, None), height=dp(22),
+                                      color=(1, 0.9, 0.4, 1))
         promo_box.add_widget(self.code_msg)
         root.add_widget(promo_box)
         return root
@@ -490,52 +546,57 @@ class MainScreen(Screen):
     def _rs(self):
         self.cups_l.text = f"Cups: {self.data['cups']}"
         self.sbox.clear_widgets()
-        self.sbox.add_widget(Label(text="SKINS", font_size=sp(12), bold=True,
-                                   color=(0.85, 0.8, 1, 1), size_hint=(1, None), height=dp(22)))
+        # skins cards
         for k, s in SKINS.items():
-            self.sbox.add_widget(self._row(s["name"], f"x{s['bonus']}" if s["bonus"] > 1 else "base",
-                                           s["price"], k in self.data["owned_skins"],
-                                           self.data["selected_skin"] == k, s["color"], "skin", k))
-        self.sbox.add_widget(Label(text="TRAILS", font_size=sp(12), bold=True,
-                                   color=(0.85, 0.8, 1, 1), size_hint=(1, None), height=dp(26)))
+            self.sbox.add_widget(self._card(s["name"], f"x{s['bonus']}" if s["bonus"] > 1 else "base",
+                                            s["price"], k in self.data["owned_skins"],
+                                            self.data["selected_skin"] == k, s["color"], "skin", k))
         for k, t in TRAILS.items():
-            self.sbox.add_widget(self._row(t["name"], f"x{t['bonus']}" if t["bonus"] > 1 else "—",
-                                           t["price"], k in self.data["owned_trails"],
-                                           self.data["selected_trail"] == k, t["color"], "trail", k))
+            self.sbox.add_widget(self._card(t["name"], f"x{t['bonus']}" if t["bonus"] > 1 else "—",
+                                            t["price"], k in self.data["owned_trails"],
+                                            self.data["selected_trail"] == k, t["color"], "trail", k))
 
-    def _row(self, title, sub, price, owned, sel, color, typ, key):
-        box = BoxLayout(orientation="horizontal", size_hint=(1, None), height=dp(52),
-                        padding=[dp(10), dp(5)], spacing=dp(10))
+    def _card(self, title, sub, price, owned, sel, color, typ, key):
+        box = BoxLayout(orientation="vertical", size_hint=(1, None), height=dp(130),
+                        padding=[dp(8), dp(8)], spacing=dp(4))
         with box.canvas.before:
-            Color(0.26, 0.22, 0.42, 1)
-            rr = RoundedRectangle(radius=[dp(12)])
-        box.bind(pos=lambda *a: setattr(rr, "pos", box.pos), size=lambda *a: setattr(rr, "size", box.size))
+            Color(0, 0, 0, 0.2)
+            self_sh = RoundedRectangle(radius=[dp(16)])
+            Color(1, 1, 1, 1)
+            self_bd = RoundedRectangle(radius=[dp(16)])
+            Color(0.92, 0.95, 1, 1)
+            self_fl = RoundedRectangle(radius=[dp(14)])
+        def _u(*a, b=box, sh=self_sh, bd=self_bd, fl=self_fl):
+            sh.pos = (b.x + 2, b.y - 3)
+            sh.size = b.size
+            bd.pos = (b.x - 1, b.y - 1)
+            bd.size = (b.width + 2, b.height + 2)
+            fl.pos = b.pos
+            fl.size = b.size
+        box.bind(pos=_u, size=_u)
+
         col = get_color_from_hex(color)
-        prev = Widget(size_hint=(None, None), size=(dp(30), dp(30)))
+        prev = Widget(size_hint=(1, None), height=dp(44))
         with prev.canvas:
             Color(*col)
             el = Ellipse()
-        prev.bind(pos=lambda *a: setattr(el, "pos", prev.pos), size=lambda *a: setattr(el, "size", prev.size))
+        prev.bind(pos=lambda *a, e=el, w=prev: setattr(e, "pos", (w.center_x - dp(18), w.y + 4)),
+                  size=lambda *a, e=el, w=prev: setattr(e, "size", (dp(36), dp(36))))
         box.add_widget(prev)
-        tb = BoxLayout(orientation="vertical")
-        t1 = Label(text=title, font_size=sp(14), bold=True, color=(1, 0.98, 0.95, 1),
-                   halign="left", valign="bottom", size_hint=(1, 0.55))
-        t2 = Label(text=sub, font_size=sp(11), color=(0.7, 0.65, 0.85, 1),
-                   halign="left", valign="top", size_hint=(1, 0.45))
-        t1.bind(size=t1.setter("text_size"))
-        t2.bind(size=t2.setter("text_size"))
-        tb.add_widget(t1)
-        tb.add_widget(t2)
-        box.add_widget(tb)
+        box.add_widget(OutlinedLabel(text=title, font_size=sp(13), size_hint=(1, None), height=dp(22),
+                                     color=(0.15, 0.2, 0.35, 1), outline_color=(1, 1, 1, 0.5)))
+        box.add_widget(OutlinedLabel(text=sub, font_size=sp(11), size_hint=(1, None), height=dp(16),
+                                     color=(0.4, 0.45, 0.6, 1), outline_width=1))
         if sel:
-            b = Btn(text="ON", bg=(0.3, 0.7, 0.4, 1), size_hint=(None, None), size=(dp(68), dp(30)))
+            b = Btn(text="ON", bg=(0.3, 0.8, 0.45, 1), size_hint=(1, None), height=dp(28))
             b.disabled = True
         elif owned:
-            b = Btn(text="USE", bg=(0.4, 0.45, 0.85, 1), size_hint=(None, None), size=(dp(68), dp(30)))
+            b = Btn(text="USE", bg=(0.35, 0.6, 1, 1), size_hint=(1, None), height=dp(28))
             b.bind(on_press=lambda x, t=typ, k=key: self._sel(t, k))
         else:
-            b = Btn(text=str(price), bg=(0.8, 0.5, 0.25, 1), size_hint=(None, None), size=(dp(68), dp(30)))
+            b = Btn(text=str(price), bg=(1, 0.7, 0.25, 1), size_hint=(1, None), height=dp(28))
             b.bind(on_press=lambda x, t=typ, k=key, p=price: self._buy(t, k, p))
+        b.font_size = sp(12)
         box.add_widget(b)
         return box
 
@@ -618,38 +679,104 @@ class MainScreen(Screen):
         self._rs()
 
     def _play(self):
-        root = BoxLayout(orientation="vertical", padding=[dp(12), dp(8), dp(12), dp(4)], spacing=dp(4))
-        top = BoxLayout(size_hint=(1, None), height=dp(38))
-        top.add_widget(Label(text="LEVELS", font_size=sp(20), bold=True, color=(0.5, 1, 0.7, 1)))
-        self.pc = Label(text="Cups: 0", font_size=sp(15), bold=True, color=(1, 0.88, 0.35, 1))
-        top.add_widget(self.pc)
-        root.add_widget(top)
-        sc = ScrollView(size_hint=(1, 1), do_scroll_x=False, bar_width=dp(4))
-        self.lbox = GridLayout(cols=1, size_hint_y=None, spacing=dp(7), padding=[0, 0, 0, dp(120)])
-        self.lbox.bind(minimum_height=self.lbox.setter("height"))
-        sc.add_widget(self.lbox)
-        root.add_widget(sc)
+        """Home screen: big character + big PLAY + level chips."""
+        root = FloatLayout()
+
+        # cups top
+        self.pc = OutlinedLabel(
+            text="Cups: 0", font_size=sp(18), color=(1, 0.92, 0.3, 1),
+            size_hint=(None, None), size=(dp(200), dp(36)),
+            pos_hint={"center_x": 0.5, "top": 0.97}
+        )
+        root.add_widget(self.pc)
+
+        # big character preview (drawn)
+        self.char_preview = Widget(size_hint=(None, None), size=(dp(140), dp(160)),
+                                   pos_hint={"center_x": 0.5, "center_y": 0.58})
+        self.char_preview.bind(pos=self._draw_char, size=self._draw_char)
+        root.add_widget(self.char_preview)
+
+        self.home_name = OutlinedLabel(
+            text="Level 1", font_size=sp(16),
+            size_hint=(None, None), size=(dp(220), dp(30)),
+            pos_hint={"center_x": 0.5, "center_y": 0.40}
+        )
+        root.add_widget(self.home_name)
+
+        # big yellow PLAY button
+        playb = Btn(text="▶  PLAY", bg=(1.0, 0.85, 0.15, 1),
+                    size_hint=(None, None), size=(dp(180), dp(64)),
+                    pos_hint={"center_x": 0.5, "center_y": 0.28})
+        playb.font_size = sp(22)
+        playb.color = (0.15, 0.15, 0.2, 1)
+        playb.outline_color = (0.1, 0.1, 0.15, 1)
+        playb.bind(on_press=self._home_play)
+        root.add_widget(playb)
+
+        # level select strip
+        lv_row = BoxLayout(size_hint=(1, None), height=dp(50),
+                           pos_hint={"x": 0, "y": 0.06}, padding=[dp(10), 0], spacing=dp(6))
+        self.lv_chip_box = BoxLayout(spacing=dp(6), size_hint=(None, 1))
+        self.lv_chip_box.bind(minimum_width=self.lv_chip_box.setter("width"))
+        sc = ScrollView(size_hint=(1, 1), do_scroll_y=False, bar_width=0)
+        sc.add_widget(self.lv_chip_box)
+        lv_row.add_widget(sc)
+        root.add_widget(lv_row)
         return root
 
+    def _draw_char(self, *a):
+        w = self.char_preview
+        w.canvas.clear()
+        skin = SKINS.get(self.data.get("selected_skin", "default"), SKINS["default"])
+        pc = get_color_from_hex(skin["color"])
+        with w.canvas:
+            # soft shadow
+            Color(0, 0, 0, 0.2)
+            Ellipse(pos=(w.x + dp(20), w.y + dp(8)), size=(dp(100), dp(30)))
+            # legs
+            Color(pc[0] * 0.7, pc[1] * 0.7, pc[2] * 0.7, 1)
+            Rectangle(pos=(w.x + dp(48), w.y + dp(30)), size=(dp(18), dp(36)))
+            Rectangle(pos=(w.x + dp(74), w.y + dp(30)), size=(dp(18), dp(36)))
+            # body
+            Color(*pc)
+            RoundedRectangle(pos=(w.x + dp(40), w.y + dp(60)), size=(dp(60), dp(50)), radius=[dp(12)])
+            # head
+            Color(min(1, pc[0] * 1.1), min(1, pc[1] * 1.1), min(1, pc[2] * 1.1), 1)
+            Ellipse(pos=(w.x + dp(42), w.y + dp(100)), size=(dp(56), dp(56)))
+            # eyes
+            Color(0.1, 0.1, 0.15, 1)
+            Ellipse(pos=(w.x + dp(54), w.y + dp(124)), size=(dp(12), dp(12)))
+            Ellipse(pos=(w.x + dp(74), w.y + dp(124)), size=(dp(12), dp(12)))
+            Color(1, 1, 1, 1)
+            Ellipse(pos=(w.x + dp(57), w.y + dp(128)), size=(dp(5), dp(5)))
+            Ellipse(pos=(w.x + dp(77), w.y + dp(128)), size=(dp(5), dp(5)))
+
     def _rp(self):
+        self.data = load_data()
         self.pc.text = f"Cups: {self.data['cups']}"
-        self.lbox.clear_widgets()
         un = self.data.get("unlocked_levels", 1)
-        for lv in range(1, 101):
+        self.home_name.text = f"Level {min(un, 100)}"
+        self.selected_level = min(un, 100)
+        self._draw_char()
+        self.lv_chip_box.clear_widgets()
+        for lv in range(1, min(un, 100) + 1):
             th = theme(lv)
-            ok = lv <= un
-            card = LevelCard(lv, th, ok)
-            if ok:
-                card.text = f"  Level {lv}   {th['name']}"
-                card.color = (1, 0.98, 0.95, 1)
-                card.font_size = sp(14)
-                card.bind(on_press=lambda x, l=lv: self._go(l))
-            else:
-                card.text = f"  Level {lv}   locked"
-                card.color = (0.45, 0.42, 0.55, 1)
-                card.font_size = sp(13)
-                card.disabled = True
-            self.lbox.add_widget(card)
+            col = get_color_from_hex(th["c"])
+            b = Btn(text=str(lv), bg=col, size_hint=(None, None), size=(dp(44), dp(44)))
+            b.font_size = sp(14)
+            b.bind(on_press=lambda x, l=lv: self._pick_lv(l))
+            self.lv_chip_box.add_widget(b)
+
+    def _pick_lv(self, lv):
+        self.selected_level = lv
+        self.home_name.text = f"Level {lv}"
+        if self.data.get("vibration_on"):
+            do_vibrate(12)
+        sfx("click", self.data.get("sound_on", True))
+
+    def _home_play(self, *a):
+        lv = getattr(self, "selected_level", 1)
+        self._go(lv)
 
     def _go(self, level):
         if self.data.get("vibration_on"):
@@ -697,28 +824,78 @@ class MainScreen(Screen):
                              size_hint=(1, None), height=dp(18))
         root.add_widget(self.acc_msg)
 
-        for lab, attr, h in [("Music", "music_on", self._tm), ("Sound Effects", "sound_on", self._ts),
-                             ("Vibration", "vibration_on", self._tv)]:
-            row = BoxLayout(size_hint=(1, None), height=dp(38))
-            row.add_widget(Label(text=lab, font_size=sp(14), color=(0.95, 0.92, 1, 1)))
-            sw = Switch(active=self.data.get(attr, True))
-            sw.bind(active=h)
-            setattr(self, "sw_" + attr, sw)
-            row.add_widget(sw)
-            root.add_widget(row)
+        # 2x2 settings grid (like reference)
+        grid = GridLayout(cols=2, size_hint=(1, None), height=dp(150), spacing=dp(10),
+                          padding=[dp(4), dp(4)])
+        self.btn_sound = Btn(text="ЗВУК\nВКЛ", bg=(0.35, 0.7, 1, 1), size_hint=(1, 1))
+        self.btn_music = Btn(text="МУЗЫКА\nВКЛ", bg=(0.45, 0.55, 1, 1), size_hint=(1, 1))
+        self.btn_vib = Btn(text="ВИБРАЦИЯ\nВКЛ", bg=(0.4, 0.85, 0.55, 1), size_hint=(1, 1))
+        self.btn_reset = Btn(text="СБРОС\nПРОГРЕССА", bg=(1, 0.4, 0.4, 1), size_hint=(1, 1))
+        for b in (self.btn_sound, self.btn_music, self.btn_vib, self.btn_reset):
+            b.font_size = sp(13)
+        self.btn_sound.bind(on_press=self._tap_sound)
+        self.btn_music.bind(on_press=self._tap_music)
+        self.btn_vib.bind(on_press=self._tap_vib)
+        self.btn_reset.bind(on_press=self._reset)
+        grid.add_widget(self.btn_sound)
+        grid.add_widget(self.btn_music)
+        grid.add_widget(self.btn_vib)
+        grid.add_widget(self.btn_reset)
+        root.add_widget(grid)
+
+        # keep switches for internal state sync (hidden)
+        self.sw_music_on = Switch(active=True, size_hint=(None, None), size=(0, 0), opacity=0)
+        self.sw_sound_on = Switch(active=True, size_hint=(None, None), size=(0, 0), opacity=0)
+        self.sw_vibration_on = Switch(active=True, size_hint=(None, None), size=(0, 0), opacity=0)
 
         root.add_widget(Widget(size_hint=(1, 1)))
-        rb = Btn(text="Сброс прогресса аккаунта", bg=(0.7, 0.25, 0.3, 1),
-                 size_hint=(1, None), height=dp(40))
-        rb.font_size = sp(13)
-        rb.bind(on_press=self._reset)
-        root.add_widget(rb)
-        info = Label(text="HAUSEL  v0.5\nby LGStudio", font_size=sp(11),
-                     color=(0.55, 0.5, 0.7, 1), size_hint=(1, None), height=dp(38),
-                     halign="center")
-        info.bind(size=info.setter("text_size"))
+        info = OutlinedLabel(text="HAUSEL  v0.6\nby LGStudio", font_size=sp(12),
+                             size_hint=(1, None), height=dp(40), color=(1, 1, 1, 0.85))
         root.add_widget(info)
         return root
+
+    def _sync_set_btns(self):
+        def mark(btn, on, on_bg, off_bg, label):
+            btn.text = f"{label}\n{'ВКЛ' if on else 'ВЫКЛ'}"
+            btn._bg = list(on_bg if on else off_bg)
+            try:
+                btn._fill.rgba = (*btn._bg,) if hasattr(btn._fill, 'rgba') else None
+            except Exception:
+                pass
+            from kivy.graphics import Color
+            # force redraw fill color
+            btn.canvas.before.clear()
+            with btn.canvas.before:
+                Color(0, 0, 0, 0.28)
+                btn._shadow = RoundedRectangle(pos=(btn.x+2, btn.y-4), size=btn.size, radius=[dp(14)])
+                Color(0.08, 0.08, 0.14, 1)
+                btn._border = RoundedRectangle(pos=(btn.x-2, btn.y-2), size=(btn.width+4, btn.height+4), radius=[dp(14)])
+                Color(*btn._bg)
+                btn._fill = RoundedRectangle(pos=btn.pos, size=btn.size, radius=[dp(12)])
+            btn.bind(pos=btn._upd_btn, size=btn._upd_btn)
+        mark(self.btn_sound, self.data.get("sound_on", True), (0.35, 0.7, 1, 1), (0.55, 0.55, 0.65, 1), "ЗВУК")
+        mark(self.btn_music, self.data.get("music_on", True), (0.45, 0.55, 1, 1), (0.55, 0.55, 0.65, 1), "МУЗЫКА")
+        mark(self.btn_vib, self.data.get("vibration_on", True), (0.4, 0.85, 0.55, 1), (0.55, 0.55, 0.65, 1), "ВИБРАЦИЯ")
+
+    def _tap_sound(self, *a):
+        self.data["sound_on"] = not self.data.get("sound_on", True)
+        save_data(self.data)
+        self._sync_set_btns()
+        sfx("click", self.data.get("sound_on", True))
+
+    def _tap_music(self, *a):
+        self.data["music_on"] = not self.data.get("music_on", True)
+        save_data(self.data)
+        menu_music(self.data["music_on"])
+        self._sync_set_btns()
+        sfx("click", self.data.get("sound_on", True))
+
+    def _tap_vib(self, *a):
+        self.data["vibration_on"] = not self.data.get("vibration_on", True)
+        save_data(self.data)
+        self._sync_set_btns()
+        if self.data["vibration_on"]:
+            do_vibrate(25)
 
     def _refresh_accounts(self):
         if not hasattr(self, "acc_box"):
@@ -1225,7 +1402,7 @@ class GameScreen(Screen):
         self.ctrl = BoxLayout(size_hint=(1, None), height=dp(62),
                               padding=[dp(8), dp(6)], spacing=dp(8))
         with self.ctrl.canvas.before:
-            Color(0.14, 0.12, 0.24, 1)
+            Color(0.20, 0.45, 0.90, 1)
             self.cbg = Rectangle()
         self.ctrl.bind(pos=lambda *a: setattr(self.cbg, "pos", self.ctrl.pos),
                        size=lambda *a: setattr(self.cbg, "size", self.ctrl.size))
