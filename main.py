@@ -1050,28 +1050,39 @@ class GameWorld(Widget):
         self.level = 1
         self.data = {}
         self.th = theme(1)
-        self.px = self.py = self.vx = self.vy = 0
-        self.pw, self.ph = 22, 32
+        self.px = self.py = self.vx = self.vy = 0.0
+        self.pw, self.ph = 24, 34
         self.ground = False
         self.face = 1
         self.alive = True
         self.won = False
         self.dtimer = 0
-        self.cam = 0
-        self.plats = []  # (x, y, w, h) — one-way
+        self.cam = 0.0
+        self.plats = []
         self.haz = []
         self.goal = None
         self.wh = 2000
         self.left = self.right = False
         self.jpress = False
-        self.jbuf = 0
+        self.jheld = False
+        self.jbuf = 0.0
+        self.coyote = 0.0
         self.parts = []
-        self.ttrail = 0
+        self.ttrail = 0.0
         self.was_g = False
-        self.G = -900
-        self.SPEED = 240
-        self.JUMP = 560
-        self.MAXFALL = -580
+        self.anim_t = 0.0
+        self.squash = 1.0  # y scale for land/jump squash-stretch
+        # physics tuned for responsive feel
+        self.G = -1600
+        self.G_FALL = -2200   # heavier when falling
+        self.SPEED = 260
+        self.ACCEL = 1800
+        self.FRICTION = 2000
+        self.JUMP = 620
+        self.JUMP_CUT = 0.45  # release jump early -> cut velocity
+        self.MAXFALL = -700
+        self.COYOTE_T = 0.09
+        self.JUMP_BUF = 0.12
 
     def start(self, level, data):
         self._init()
@@ -1167,30 +1178,61 @@ class GameWorld(Widget):
             return
 
         dt = min(dt, 0.033)
-        tv = 0
-        if self.left:
-            tv = -self.SPEED
-            self.face = -1
-        if self.right:
-            tv = self.SPEED
-            self.face = 1
-        self.vx = tv
+        self.anim_t += dt
 
+        # --- horizontal: accelerate / friction (no sticky drift) ---
+        want = 0.0
+        if self.left and not self.right:
+            want = -1.0
+            self.face = -1
+        elif self.right and not self.left:
+            want = 1.0
+            self.face = 1
+        # if both or neither: slow down
+        if want != 0:
+            self.vx += want * self.ACCEL * dt
+            if self.vx > self.SPEED:
+                self.vx = self.SPEED
+            if self.vx < -self.SPEED:
+                self.vx = -self.SPEED
+        else:
+            if abs(self.vx) <= self.FRICTION * dt:
+                self.vx = 0.0
+            else:
+                self.vx -= (1 if self.vx > 0 else -1) * self.FRICTION * dt
+
+        # --- jump buffer + coyote time ---
         if self.jpress:
-            self.jbuf = 0.12
+            self.jbuf = self.JUMP_BUF
             self.jpress = False
-        self.jbuf = max(0, self.jbuf - dt)
-        if self.jbuf > 0 and self.ground:
+            self.jheld = True
+        self.jbuf = max(0.0, self.jbuf - dt)
+
+        if self.ground:
+            self.coyote = self.COYOTE_T
+        else:
+            self.coyote = max(0.0, self.coyote - dt)
+
+        if self.jbuf > 0 and self.coyote > 0:
             self.vy = self.JUMP
             self.ground = False
-            self.jbuf = 0
+            self.coyote = 0.0
+            self.jbuf = 0.0
+            self.squash = 1.25  # stretch up
             sfx("jump", self.data.get("sound_on", True))
 
-        self.vy += self.G * dt
-        self.vy = max(self.vy, self.MAXFALL)
+        # variable jump height: release early cuts upward speed
+        if not self.jheld and self.vy > 0:
+            self.vy *= self.JUMP_CUT
+
+        # gravity: stronger when falling for snappy landings
+        g = self.G if self.vy > 0 else self.G_FALL
+        self.vy += g * dt
+        if self.vy < self.MAXFALL:
+            self.vy = self.MAXFALL
 
         self.px += self.vx * dt
-        self.px = max(0, min(self.width - self.pw, self.px))
+        self.px = max(0.0, min(self.width - self.pw, self.px))
         self.py += self.vy * dt
 
         self.was_g = self.ground
@@ -1198,7 +1240,11 @@ class GameWorld(Widget):
         self._collide_oneway()
 
         if self.ground and not self.was_g:
+            self.squash = 0.7  # squash on land
             sfx("land", self.data.get("sound_on", True))
+
+        # recover squash/stretch
+        self.squash += (1.0 - self.squash) * min(1.0, 12 * dt)
 
         if self._hazard():
             self._die()
@@ -1358,16 +1404,50 @@ class GameWorld(Widget):
                 sk = SKINS.get(self.data.get("selected_skin", "default"), SKINS["default"])
                 pc = get_color_from_hex(sk["color"])
                 px, py = self.px, self.py - cam
+                sq = self.squash
+                # walk bob / leg cycle
+                moving = abs(self.vx) > 20 and self.ground
+                phase = self.anim_t * (10 if moving else 0)
+                leg_off = (3.5 if moving else 0) * __import__("math").sin(phase)
+                bob = (1.5 if moving else 0) * abs(__import__("math").sin(phase))
+                # jump pose
+                in_air = not self.ground
+                body_h = 14 * sq
+                head_s = 16 * (2 - sq) * 0.9 + 2
+                leg_h = (10 if in_air else 12) * (2 - sq)
+
+                # legs
                 Color(pc[0] * 0.65, pc[1] * 0.65, pc[2] * 0.65, 1)
-                Rectangle(pos=(px + 4, py), size=(6, 12))
-                Rectangle(pos=(px + 12, py), size=(6, 12))
+                if in_air:
+                    # tucked legs
+                    Rectangle(pos=(px + 5, py + 2), size=(6, leg_h * 0.7))
+                    Rectangle(pos=(px + 13, py + 2), size=(6, leg_h * 0.7))
+                else:
+                    Rectangle(pos=(px + 5, py + leg_off * 0.3), size=(6, leg_h))
+                    Rectangle(pos=(px + 13, py - leg_off * 0.3), size=(6, leg_h))
+                # body
                 Color(*pc)
-                Rectangle(pos=(px + 2, py + 11), size=(18, 14))
+                by = py + leg_h * 0.85 + bob
+                Rectangle(pos=(px + 2, by), size=(20, body_h))
+                # head
                 Color(min(1, pc[0] * 1.1), min(1, pc[1] * 1.1), min(1, pc[2] * 1.1), 1)
-                Ellipse(pos=(px + 3, py + 24), size=(16, 16))
-                Color(0.12, 0.1, 0.16, 1)
-                ex = px + 10 if self.face > 0 else px + 5
-                Ellipse(pos=(ex, py + 30), size=(4, 4))
+                hy = by + body_h - 2
+                Ellipse(pos=(px + 4, hy), size=(head_s, head_s))
+                # eyes
+                Color(0.1, 0.08, 0.14, 1)
+                eye_y = hy + head_s * 0.45
+                if self.face > 0:
+                    Ellipse(pos=(px + 12, eye_y), size=(4.5, 4.5))
+                    Ellipse(pos=(px + 18, eye_y), size=(3.5, 3.5))
+                else:
+                    Ellipse(pos=(px + 5, eye_y), size=(4.5, 4.5))
+                    Ellipse(pos=(px + 11, eye_y), size=(3.5, 3.5))
+                # white eye shine
+                Color(1, 1, 1, 0.9)
+                if self.face > 0:
+                    Ellipse(pos=(px + 13, eye_y + 1.5), size=(2, 2))
+                else:
+                    Ellipse(pos=(px + 6, eye_y + 1.5), size=(2, 2))
 
 
 class GameScreen(Screen):
@@ -1429,7 +1509,7 @@ class GameScreen(Screen):
                      on_touch_up=self._touch_up_ctrl)
         self.br.bind(on_press=lambda x: self._mv("r", True), on_release=lambda x: self._mv("r", False),
                      on_touch_up=self._touch_up_ctrl)
-        self.bj.bind(on_press=lambda x: self._jp())
+        self.bj.bind(on_press=lambda x: self._jp(), on_release=lambda x: self._jr())
         self.ctrl.add_widget(self.bl)
         self.ctrl.add_widget(self.bj)
         self.ctrl.add_widget(self.br)
@@ -1446,6 +1526,10 @@ class GameScreen(Screen):
 
     def _jp(self):
         self.world.jpress = True
+        self.world.jheld = True
+
+    def _jr(self):
+        self.world.jheld = False
 
     def _touch_up_ctrl(self, inst, touch):
         # ensure movement stops when finger lifts anywhere
@@ -1465,12 +1549,15 @@ class GameScreen(Screen):
             self.world.right = True
         elif key in (32, 273, 119):
             self.world.jpress = True
+            self.world.jheld = True
 
     def _ku(self, w, key, sc):
         if key in (276, 97):
             self.world.left = False
         elif key in (275, 100):
             self.world.right = False
+        if key in (32, 273, 119):
+            self.world.jheld = False
 
     def setup(self, level, data):
         self.level = level
