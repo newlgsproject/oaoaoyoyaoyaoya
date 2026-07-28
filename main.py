@@ -327,6 +327,72 @@ class Btn(Button):
         Animation(opacity=1, duration=0.1, t="out_quad").start(self)
         self._upd_btn()
 
+
+class HoldButton(Button):
+    """Reliable hold button for mobile — tracks touch id, no stuck state."""
+    def __init__(self, bg=(0.4, 0.45, 0.95, 1), **kw):
+        super().__init__(**kw)
+        self.background_normal = self.background_down = ""
+        self.background_color = (0, 0, 0, 0)
+        self.color = (1, 1, 1, 1)
+        self.bold = True
+        self.font_name = UI_FONT
+        self.outline_width = 2
+        self.outline_color = (0, 0, 0, 1)
+        self._bg = list(bg)
+        self._touch_id = None
+        self.held = False
+        self.on_hold = None   # callback(True/False)
+        self.on_tap = None    # callback once on press
+        with self.canvas.before:
+            Color(0, 0, 0, 0.3)
+            self._sh = RoundedRectangle(radius=[dp(14)])
+            Color(0.08, 0.08, 0.12, 1)
+            self._bd = RoundedRectangle(radius=[dp(14)])
+            Color(*bg)
+            self._fl = RoundedRectangle(radius=[dp(12)])
+        self.bind(pos=self._relayout, size=self._relayout)
+
+    def _relayout(self, *a):
+        self._sh.pos = (self.x + 2, self.y - 3)
+        self._sh.size = self.size
+        self._bd.pos = (self.x - 2, self.y - 2)
+        self._bd.size = (self.width + 4, self.height + 4)
+        self._fl.pos = self.pos
+        self._fl.size = self.size
+
+    def on_touch_down(self, touch):
+        if self.collide_point(*touch.pos) and self._touch_id is None:
+            self._touch_id = touch.uid
+            self.held = True
+            touch.grab(self)
+            if self.on_tap:
+                self.on_tap()
+            if self.on_hold:
+                self.on_hold(True)
+            return True
+        return super().on_touch_down(touch)
+
+    def on_touch_up(self, touch):
+        if self._touch_id is not None and (touch.uid == self._touch_id or touch.grab_current is self):
+            try:
+                touch.ungrab(self)
+            except Exception:
+                pass
+            self._touch_id = None
+            if self.held:
+                self.held = False
+                if self.on_hold:
+                    self.on_hold(False)
+            return True
+        return super().on_touch_up(touch)
+
+    def on_touch_move(self, touch):
+        # keep held even if finger slides slightly
+        if touch.uid == self._touch_id:
+            return True
+        return super().on_touch_move(touch)
+
 class NavBtn(Button):
     def __init__(self, **kw):
         super().__init__(**kw)
@@ -432,6 +498,7 @@ class MainScreen(Screen):
         super().__init__(**kw)
         self.data = load_data()
         self.tab = "play"
+        self.selected_level = 1
         col = BoxLayout(orientation="vertical")
         self.body = FloatLayout(size_hint=(1, 1))
         col.add_widget(self.body)
@@ -519,7 +586,7 @@ class MainScreen(Screen):
 
         sc = ScrollView(size_hint=(1, 1), do_scroll_x=False, bar_width=dp(4))
         self.shop_scroll_box = BoxLayout(orientation="vertical", size_hint_y=None, spacing=dp(10),
-                                         padding=[0, 0, 0, dp(24)])
+                                         padding=[0, 0, 0, dp(120)])
         self.shop_scroll_box.bind(minimum_height=self.shop_scroll_box.setter("height"))
         self.sbox = GridLayout(cols=2, size_hint_y=None, spacing=dp(10),
                                padding=[dp(4), dp(4)], row_default_height=dp(130),
@@ -528,7 +595,7 @@ class MainScreen(Screen):
         self.shop_scroll_box.add_widget(self.sbox)
 
         # Promo at the END of scroll — always last item in shop
-        promo_box = BoxLayout(orientation="vertical", size_hint=(1, None), height=dp(110), spacing=dp(6))
+        promo_box = BoxLayout(orientation="vertical", size_hint=(1, None), height=dp(120), spacing=dp(6))
         with promo_box.canvas.before:
             Color(0.25, 0.5, 0.95, 1)
             pr = RoundedRectangle(radius=[dp(14)])
@@ -789,7 +856,10 @@ class MainScreen(Screen):
         sfx("click", self.data.get("sound_on", True))
 
     def _home_play(self, *a):
-        lv = getattr(self, "selected_level", 1)
+        lv = getattr(self, "selected_level", None)
+        if lv is None:
+            lv = min(self.data.get("unlocked_levels", 1), 100)
+            self.selected_level = lv
         self._go(lv)
 
     def _go(self, level):
@@ -869,27 +939,24 @@ class MainScreen(Screen):
         return root
 
     def _sync_set_btns(self):
-        def mark(btn, on, on_bg, off_bg, label):
+        if not hasattr(self, "btn_sound"):
+            return
+        pairs = [
+            (self.btn_sound, self.data.get("sound_on", True), (0.35, 0.7, 1, 1), (0.55, 0.55, 0.65, 1), "ЗВУК"),
+            (self.btn_music, self.data.get("music_on", True), (0.45, 0.55, 1, 1), (0.55, 0.55, 0.65, 1), "МУЗЫКА"),
+            (self.btn_vib, self.data.get("vibration_on", True), (0.4, 0.85, 0.55, 1), (0.55, 0.55, 0.65, 1), "ВИБРАЦИЯ"),
+        ]
+        for btn, on, on_bg, off_bg, label in pairs:
             btn.text = f"{label}\n{'ВКЛ' if on else 'ВЫКЛ'}"
             btn._bg = list(on_bg if on else off_bg)
             try:
-                btn._fill.rgba = (*btn._bg,) if hasattr(btn._fill, 'rgba') else None
+                if hasattr(btn, "_fill"):
+                    btn.canvas.before.remove(btn._fill)
+                with btn.canvas.before:
+                    Color(*btn._bg)
+                    btn._fill = RoundedRectangle(pos=btn.pos, size=btn.size, radius=[dp(12)])
             except Exception:
                 pass
-            from kivy.graphics import Color
-            # force redraw fill color
-            btn.canvas.before.clear()
-            with btn.canvas.before:
-                Color(0, 0, 0, 0.28)
-                btn._shadow = RoundedRectangle(pos=(btn.x+2, btn.y-4), size=btn.size, radius=[dp(14)])
-                Color(0.08, 0.08, 0.14, 1)
-                btn._border = RoundedRectangle(pos=(btn.x-2, btn.y-2), size=(btn.width+4, btn.height+4), radius=[dp(14)])
-                Color(*btn._bg)
-                btn._fill = RoundedRectangle(pos=btn.pos, size=btn.size, radius=[dp(12)])
-            btn.bind(pos=btn._upd_btn, size=btn._upd_btn)
-        mark(self.btn_sound, self.data.get("sound_on", True), (0.35, 0.7, 1, 1), (0.55, 0.55, 0.65, 1), "ЗВУК")
-        mark(self.btn_music, self.data.get("music_on", True), (0.45, 0.55, 1, 1), (0.55, 0.55, 0.65, 1), "МУЗЫКА")
-        mark(self.btn_vib, self.data.get("vibration_on", True), (0.4, 0.85, 0.55, 1), (0.55, 0.55, 0.65, 1), "ВИБРАЦИЯ")
 
     def _tap_sound(self, *a):
         self.data["sound_on"] = not self.data.get("sound_on", True)
@@ -1092,6 +1159,9 @@ class GameWorld(Widget):
         self.left = False
         self.right = False
         self.jpress = False
+        self.jheld = False
+        self.vx = 0.0
+        self.vy = 0.0
         self._build()
         self._draw()
         if self._ev:
@@ -1191,15 +1261,10 @@ class GameWorld(Widget):
         # if both or neither: slow down
         if want != 0:
             self.vx += want * self.ACCEL * dt
-            if self.vx > self.SPEED:
-                self.vx = self.SPEED
-            if self.vx < -self.SPEED:
-                self.vx = -self.SPEED
+            self.vx = max(-self.SPEED, min(self.SPEED, self.vx))
         else:
-            if abs(self.vx) <= self.FRICTION * dt:
-                self.vx = 0.0
-            else:
-                self.vx -= (1 if self.vx > 0 else -1) * self.FRICTION * dt
+            # hard stop when no input — prevents phantom running
+            self.vx = 0.0
 
         # --- jump buffer + coyote time ---
         if self.jpress:
@@ -1463,10 +1528,19 @@ class GameScreen(Screen):
         self.world = GameWorld(size_hint=(1, 1), pos_hint={"x": 0, "y": 0})
         self.area.add_widget(self.world)
 
-        self.info = Label(text="Lv.1", font_size=sp(14), bold=True, color=(1, 0.98, 0.95, 0.95),
-                          size_hint=(None, None), size=(dp(210), dp(28)),
-                          pos_hint={"x": 0.03, "top": 0.98}, halign="left")
+        self.info = Label(text="Lv.1", font_size=sp(16), bold=True, color=(1, 1, 1, 1),
+                          size_hint=(None, None), size=(dp(240), dp(34)),
+                          pos_hint={"x": 0.04, "top": 0.995}, halign="left", valign="middle")
         self.info.bind(size=self.info.setter("text_size"))
+        self.info.outline_width = 2
+        self.info.outline_color = (0, 0, 0, 1)
+        with self.info.canvas.before:
+            Color(0, 0, 0, 0.35)
+            self._info_bg = RoundedRectangle(radius=[dp(8)])
+        def _info_bg(*a):
+            self._info_bg.pos = (self.info.x - dp(6), self.info.y - dp(2))
+            self._info_bg.size = (self.info.width + dp(12), self.info.height + dp(4))
+        self.info.bind(pos=_info_bg, size=_info_bg)
         self.area.add_widget(self.info)
 
         self.mb = Btn(text="MENU", bg=(0.55, 0.22, 0.3, 0.92),
@@ -1491,25 +1565,33 @@ class GameScreen(Screen):
 
         col.add_widget(self.area)
 
-        # Controls — fixed bottom strip, game never draws here
-        self.ctrl = BoxLayout(size_hint=(1, None), height=dp(72),
-                              padding=[dp(8), dp(6)], spacing=dp(8))
+        # Controls — reliable HoldButtons (no stuck movement)
+        self.ctrl = BoxLayout(size_hint=(1, None), height=dp(78),
+                              padding=[dp(10), dp(8)], spacing=dp(10))
         with self.ctrl.canvas.before:
-            Color(0.20, 0.45, 0.90, 1)
+            Color(0.18, 0.42, 0.88, 1)
             self.cbg = Rectangle()
         self.ctrl.bind(pos=lambda *a: setattr(self.cbg, "pos", self.ctrl.pos),
                        size=lambda *a: setattr(self.cbg, "size", self.ctrl.size))
-        self.bl = Btn(text="<", bg=(0.4, 0.45, 0.95, 1), size_hint=(0.28, 1))
-        self.bj = Btn(text="JUMP", bg=(1.0, 0.75, 0.2, 1), size_hint=(0.44, 1))
-        self.br = Btn(text=">", bg=(0.4, 0.45, 0.95, 1), size_hint=(0.28, 1))
-        self.bl.font_size = sp(28)
-        self.br.font_size = sp(28)
+
+        self.bl = HoldButton(text="<", bg=(0.35, 0.5, 1.0, 1), size_hint=(0.28, 1))
+        self.bj = HoldButton(text="JUMP", bg=(1.0, 0.78, 0.2, 1), size_hint=(0.44, 1))
+        self.br = HoldButton(text=">", bg=(0.35, 0.5, 1.0, 1), size_hint=(0.28, 1))
+        self.bl.font_size = sp(30)
+        self.br.font_size = sp(30)
         self.bj.font_size = sp(18)
-        self.bl.bind(on_press=lambda x: self._mv("l", True), on_release=lambda x: self._mv("l", False),
-                     on_touch_up=self._touch_up_ctrl)
-        self.br.bind(on_press=lambda x: self._mv("r", True), on_release=lambda x: self._mv("r", False),
-                     on_touch_up=self._touch_up_ctrl)
-        self.bj.bind(on_press=lambda x: self._jp(), on_release=lambda x: self._jr())
+        self.bj.color = (0.15, 0.12, 0.1, 1)
+
+        self.bl.on_hold = lambda held: setattr(self.world, "left", bool(held))
+        self.br.on_hold = lambda held: setattr(self.world, "right", bool(held))
+        def _jump_hold(held):
+            if held:
+                self.world.jpress = True
+                self.world.jheld = True
+            else:
+                self.world.jheld = False
+        self.bj.on_hold = _jump_hold
+
         self.ctrl.add_widget(self.bl)
         self.ctrl.add_widget(self.bj)
         self.ctrl.add_widget(self.br)
@@ -1518,45 +1600,23 @@ class GameScreen(Screen):
         self.add_widget(col)
         Window.bind(on_key_down=self._kd, on_key_up=self._ku)
 
-    def _mv(self, s, st):
-        if s == "l":
-            self.world.left = st
-        else:
-            self.world.right = st
-
-    def _jp(self):
-        self.world.jpress = True
-        self.world.jheld = True
-
-    def _jr(self):
-        self.world.jheld = False
-
-    def _touch_up_ctrl(self, inst, touch):
-        # ensure movement stops when finger lifts anywhere
-        if not inst.collide_point(*touch.pos):
-            if inst is self.bl:
-                self.world.left = False
-            elif inst is self.br:
-                self.world.right = False
-        return False
-
     def _kd(self, w, key, sc, code, mod):
-        if self.manager.current != "game":
+        if not self.manager or self.manager.current != "game":
             return
-        if key in (276, 97):
+        if key in (276, 97, 263):  # left / a
             self.world.left = True
-        elif key in (275, 100):
+        elif key in (275, 100, 262):  # right / d
             self.world.right = True
-        elif key in (32, 273, 119):
+        elif key in (32, 273, 119, 265):  # space / up / w
             self.world.jpress = True
             self.world.jheld = True
 
     def _ku(self, w, key, sc):
-        if key in (276, 97):
+        if key in (276, 97, 263):
             self.world.left = False
-        elif key in (275, 100):
+        elif key in (275, 100, 262):
             self.world.right = False
-        if key in (32, 273, 119):
+        if key in (32, 273, 119, 265):
             self.world.jheld = False
 
     def setup(self, level, data):
@@ -1565,14 +1625,33 @@ class GameScreen(Screen):
         self.win_l.opacity = 0
         self.cont.opacity = 0
         self.cont.disabled = True
+        # hard reset all input
         self.world.left = False
         self.world.right = False
         self.world.jpress = False
+        self.world.jheld = False
+        self.world.vx = 0
+        if hasattr(self, "bl"):
+            self.bl.held = False
+            self.bl._touch_id = None
+            self.br.held = False
+            self.br._touch_id = None
+            self.bj.held = False
+            self.bj._touch_id = None
         th = theme(level)
         self.info.text = f"Lv.{level}  {th['name']}"
-        Clock.schedule_once(lambda dt: self.world.start(level, data), 0.06)
+        def _do_start(dt):
+            self.world.start(level, data)
+            # rebuild once size is known
+            if self.world.width > 100:
+                self.world._build()
+                self.world.px = max(0, self.world.width / 2 - self.world.pw / 2)
+        Clock.schedule_once(_do_start, 0.08)
 
     def on_leave(self, *a):
+        self.world.left = False
+        self.world.right = False
+        self.world.jheld = False
         self.world.stop()
 
     def _menu(self, *a):
@@ -1593,6 +1672,9 @@ class GameScreen(Screen):
         return True
 
     def on_enter(self, *a):
+        self.world.left = False
+        self.world.right = False
+        self.world.jheld = False
         Clock.schedule_interval(self._chk, 0.1)
 
     def _cont(self, *a):
