@@ -1,4 +1,4 @@
-# HAUSEL v0.3 - Vertical Pixel Platformer | LGStudio
+# HAUSEL v0.4 - One-way platforms | LGStudio
 
 from kivy.app import App
 from kivy.uix.screenmanager import ScreenManager, Screen, FadeTransition, SlideTransition
@@ -15,7 +15,6 @@ from kivy.uix.textinput import TextInput
 from kivy.graphics import Color, Rectangle, RoundedRectangle, Ellipse, Triangle, Line
 from kivy.core.window import Window
 from kivy.clock import Clock
-from kivy.animation import Animation
 from kivy.storage.jsonstore import JsonStore
 from kivy.metrics import dp, sp
 from kivy.utils import get_color_from_hex, platform
@@ -25,55 +24,53 @@ import os
 
 if platform not in ("android", "ios"):
     Window.size = (360, 740)
-Window.clearcolor = (0.18, 0.14, 0.28, 1)
+Window.clearcolor = (0.2, 0.16, 0.3, 1)
 
-# ===================== PATHS =====================
 def asset(name):
     base = os.path.dirname(os.path.abspath(__file__))
-    p1 = os.path.join(base, "assets", name)
-    p2 = os.path.join(base, name)
-    return p1 if os.path.exists(p1) else p2
+    for p in (os.path.join(base, "assets", name), os.path.join(base, name)):
+        if os.path.exists(p):
+            return p
+    return os.path.join(base, "assets", name)
 
-# ===================== VIBRATION =====================
 def do_vibrate(ms=30):
     try:
         if platform == "android":
             from jnius import autoclass
-            activity = autoclass("org.kivy.android.PythonActivity").mActivity
-            Context = autoclass("android.content.Context")
-            v = activity.getSystemService(Context.VIBRATOR_SERVICE)
+            act = autoclass("org.kivy.android.PythonActivity").mActivity
+            Ctx = autoclass("android.content.Context")
+            v = act.getSystemService(Ctx.VIBRATOR_SERVICE)
             if v:
                 v.vibrate(int(ms))
     except Exception:
         pass
 
-# ===================== AUDIO =====================
 _sounds = {}
 _menu = None
 
-def _load_sounds():
+def load_audio():
     global _menu
-    for key, fname in [("jump", "jump.wav"), ("land", "land.wav"), ("death", "death.wav"),
-                       ("win", "win.wav"), ("click", "click.wav")]:
+    for k, f in [("jump", "jump.wav"), ("land", "land.wav"), ("death", "death.wav"),
+                 ("win", "win.wav"), ("click", "click.wav")]:
         try:
-            s = SoundLoader.load(asset(fname))
+            s = SoundLoader.load(asset(f))
             if s:
-                s.volume = 0.45
-                _sounds[key] = s
+                s.volume = 0.4
+                _sounds[k] = s
         except Exception:
             pass
     try:
         _menu = SoundLoader.load(asset("menu.wav"))
         if _menu:
             _menu.loop = True
-            _menu.volume = 0.28
+            _menu.volume = 0.25
     except Exception:
         pass
 
-def sfx(name, enabled=True):
-    if not enabled:
+def sfx(n, on=True):
+    if not on:
         return
-    s = _sounds.get(name)
+    s = _sounds.get(n)
     if s:
         try:
             s.stop()
@@ -82,7 +79,6 @@ def sfx(name, enabled=True):
             pass
 
 def menu_music(on):
-    global _menu
     if not _menu:
         return
     try:
@@ -94,7 +90,6 @@ def menu_music(on):
     except Exception:
         pass
 
-# ===================== DATA =====================
 store = JsonStore("game_data.json")
 DEFAULT = {
     "cups": 0, "unlocked_levels": 1,
@@ -104,60 +99,168 @@ DEFAULT = {
     "used_codes": [],
 }
 
-def load_data():
+def _fresh_progress():
     d = DEFAULT.copy()
-    if store.exists("player"):
-        d.update(store.get("player"))
-    # ensure lists
-    for k in ("owned_skins", "owned_trails", "used_codes"):
-        if not isinstance(d.get(k), list):
-            d[k] = list(DEFAULT[k])
+    d["owned_skins"] = ["default"]
+    d["owned_trails"] = ["none"]
+    d["used_codes"] = []
     return d
 
+def _new_acc_id():
+    import time
+    return "acc_" + str(int(time.time() * 1000))
+
+def _load_db():
+    """Multi-account database stored locally."""
+    if store.exists("db"):
+        db = dict(store.get("db"))
+        if "accounts" not in db or not db["accounts"]:
+            aid = _new_acc_id()
+            db = {
+                "accounts": [{"id": aid, "name": "Игрок 1", "data": _fresh_progress()}],
+                "current_id": aid,
+            }
+            store.put("db", **db)
+        return db
+    # migrate old single-player save if present
+    if store.exists("player"):
+        old = dict(store.get("player"))
+        aid = _new_acc_id()
+        db = {
+            "accounts": [{"id": aid, "name": "Игрок 1", "data": old}],
+            "current_id": aid,
+        }
+        store.put("db", **db)
+        return db
+    aid = _new_acc_id()
+    db = {
+        "accounts": [{"id": aid, "name": "Игрок 1", "data": _fresh_progress()}],
+        "current_id": aid,
+    }
+    store.put("db", **db)
+    return db
+
+def _save_db(db):
+    store.put("db", **db)
+
+def load_data():
+    db = _load_db()
+    cid = db.get("current_id")
+    for acc in db.get("accounts", []):
+        if acc.get("id") == cid:
+            d = _fresh_progress()
+            d.update(acc.get("data") or {})
+            for k in ("owned_skins", "owned_trails", "used_codes"):
+                if not isinstance(d.get(k), list):
+                    d[k] = list(DEFAULT[k])
+            d["_account_id"] = acc["id"]
+            d["_account_name"] = acc.get("name", "Игрок")
+            return d
+    # fallback first account
+    if db.get("accounts"):
+        acc = db["accounts"][0]
+        db["current_id"] = acc["id"]
+        _save_db(db)
+        d = _fresh_progress()
+        d.update(acc.get("data") or {})
+        d["_account_id"] = acc["id"]
+        d["_account_name"] = acc.get("name", "Игрок")
+        return d
+    return _fresh_progress()
+
 def save_data(d):
-    store.put("player", **d)
+    db = _load_db()
+    cid = d.get("_account_id") or db.get("current_id")
+    # strip internal keys before saving progress
+    progress = {k: v for k, v in d.items() if not k.startswith("_")}
+    for acc in db.get("accounts", []):
+        if acc.get("id") == cid:
+            acc["data"] = progress
+            break
+    _save_db(db)
 
-PROMO = {
-    "YAULTRA": {"cups": 10000},
-}
+def list_accounts():
+    db = _load_db()
+    return list(db.get("accounts", [])), db.get("current_id")
 
-# ===================== THEMES =====================
-LEVEL_THEMES = [
-    {"name": "Moss Valley",  "color": "#6BBF7A", "bg": "#1E3A28", "plat": "#4A9A58", "hazard": "#E05555"},
-    {"name": "Pine Ridge",   "color": "#8FBF5A", "bg": "#243818", "plat": "#6A9A3E", "hazard": "#E08040"},
-    {"name": "Teal Shores",  "color": "#4DB8B0", "bg": "#183838", "plat": "#2E8A84", "hazard": "#E06090"},
-    {"name": "Sky Bridge",   "color": "#5AADD0", "bg": "#183040", "plat": "#3A88B0", "hazard": "#E09040"},
-    {"name": "Deep Blue",    "color": "#5A90D0", "bg": "#182840", "plat": "#3A68A8", "hazard": "#E05050"},
-    {"name": "Night Indigo", "color": "#7A7AD0", "bg": "#202040", "plat": "#5050A0", "hazard": "#E08040"},
-    {"name": "Grape Wall",   "color": "#9A70D0", "bg": "#281840", "plat": "#6848A0", "hazard": "#E05070"},
-    {"name": "Orchid Path",  "color": "#C060B0", "bg": "#301828", "plat": "#883878", "hazard": "#E06060"},
-    {"name": "Rose Gate",    "color": "#E06090", "bg": "#301820", "plat": "#A03858", "hazard": "#E0B040"},
-    {"name": "Coral Peak",   "color": "#E07070", "bg": "#301818", "plat": "#A04848", "hazard": "#40C0C0"},
+def create_account(name):
+    name = (name or "").strip() or "Игрок"
+    db = _load_db()
+    aid = _new_acc_id()
+    db.setdefault("accounts", []).append({
+        "id": aid, "name": name[:20], "data": _fresh_progress()
+    })
+    db["current_id"] = aid
+    _save_db(db)
+    return aid
+
+def switch_account(aid):
+    db = _load_db()
+    for acc in db.get("accounts", []):
+        if acc.get("id") == aid:
+            db["current_id"] = aid
+            _save_db(db)
+            return True
+    return False
+
+def delete_account(aid):
+    db = _load_db()
+    accs = db.get("accounts", [])
+    if len(accs) <= 1:
+        return False  # keep at least one
+    db["accounts"] = [a for a in accs if a.get("id") != aid]
+    if db.get("current_id") == aid:
+        db["current_id"] = db["accounts"][0]["id"]
+    _save_db(db)
+    return True
+
+def rename_account(aid, name):
+    name = (name or "").strip() or "Игрок"
+    db = _load_db()
+    for acc in db.get("accounts", []):
+        if acc.get("id") == aid:
+            acc["name"] = name[:20]
+            _save_db(db)
+            return True
+    return False
+
+PROMO = {"YAULTRA": {"cups": 10000}}
+
+THEMES = [
+    {"name": "Moss Valley",  "c": "#7BC98A", "bg": "#1E3D2A", "plat": "#4FAA5E", "haz": "#E05555"},
+    {"name": "Pine Ridge",   "c": "#9BC96A", "bg": "#263C1A", "plat": "#6FAA48", "haz": "#E08840"},
+    {"name": "Teal Shores",  "c": "#55C8C0", "bg": "#1A3C3C", "plat": "#38A098", "haz": "#E06890"},
+    {"name": "Sky Bridge",   "c": "#6AB8D8", "bg": "#1A3444", "plat": "#4898C0", "haz": "#E09840"},
+    {"name": "Deep Blue",    "c": "#6A9CD8", "bg": "#1A2C44", "plat": "#4870B0", "haz": "#E05050"},
+    {"name": "Night Indigo", "c": "#8A8AD8", "bg": "#222244", "plat": "#5858B0", "haz": "#E08840"},
+    {"name": "Grape Wall",   "c": "#A880D8", "bg": "#2A1C44", "plat": "#7050B0", "haz": "#E05070"},
+    {"name": "Orchid Path",  "c": "#C870B8", "bg": "#321C30", "plat": "#904088", "haz": "#E06060"},
+    {"name": "Rose Gate",    "c": "#E07098", "bg": "#321C28", "plat": "#A84060", "haz": "#E0B040"},
+    {"name": "Coral Peak",   "c": "#E08080", "bg": "#321C1C", "plat": "#A85050", "haz": "#40C0C0"},
 ]
 
-def theme_for(level):
-    return LEVEL_THEMES[(level - 1) % 10].copy()
+def theme(lv):
+    return THEMES[(lv - 1) % 10].copy()
 
 SKINS = {
-    "default": {"name": "Classic", "price": 0,   "bonus": 1.0,  "color": "#FFF5E6"},
-    "red":     {"name": "Crimson", "price": 50,  "bonus": 1.1,  "color": "#FF6B6B"},
-    "blue":    {"name": "Ocean",   "price": 80,  "bonus": 1.15, "color": "#4ECDC4"},
-    "gold":    {"name": "Golden",  "price": 150, "bonus": 1.3,  "color": "#FFD93D"},
-    "neon":    {"name": "Neon",    "price": 250, "bonus": 1.5,  "color": "#6BCB77"},
-    "shadow":  {"name": "Shadow",  "price": 400, "bonus": 1.8,  "color": "#A78BFA"},
+    "default": {"name": "Classic", "price": 0, "bonus": 1.0, "color": "#FFF8F0"},
+    "red": {"name": "Crimson", "price": 50, "bonus": 1.1, "color": "#FF6B6B"},
+    "blue": {"name": "Ocean", "price": 80, "bonus": 1.15, "color": "#4ECDC4"},
+    "gold": {"name": "Golden", "price": 150, "bonus": 1.3, "color": "#FFD93D"},
+    "neon": {"name": "Neon", "price": 250, "bonus": 1.5, "color": "#6BCB77"},
+    "shadow": {"name": "Shadow", "price": 400, "bonus": 1.8, "color": "#A78BFA"},
 }
 TRAILS = {
-    "none":    {"name": "No Trail",   "price": 0,   "bonus": 1.0,  "color": "#888"},
-    "white":   {"name": "White Dust", "price": 40,  "bonus": 1.05, "color": "#FFF"},
-    "fire":    {"name": "Fire Trail", "price": 100, "bonus": 1.2,  "color": "#FF7A3A"},
-    "ice":     {"name": "Ice Trail",  "price": 120, "bonus": 1.25, "color": "#4ECDC4"},
-    "rainbow": {"name": "Rainbow",    "price": 300, "bonus": 1.6,  "color": "#FF6BCB"},
-    "stars":   {"name": "Star Dust",  "price": 500, "bonus": 2.0,  "color": "#FFD93D"},
+    "none": {"name": "No Trail", "price": 0, "bonus": 1.0, "color": "#888"},
+    "white": {"name": "White Dust", "price": 40, "bonus": 1.05, "color": "#FFF"},
+    "fire": {"name": "Fire Trail", "price": 100, "bonus": 1.2, "color": "#FF7A3A"},
+    "ice": {"name": "Ice Trail", "price": 120, "bonus": 1.25, "color": "#4ECDC4"},
+    "rainbow": {"name": "Rainbow", "price": 300, "bonus": 1.6, "color": "#FF6BCB"},
+    "stars": {"name": "Star Dust", "price": 500, "bonus": 2.0, "color": "#FFD93D"},
 }
 
-# ===================== UI HELPERS =====================
 class Btn(Button):
-    def __init__(self, bg=(0.4, 0.45, 0.85, 1), **kw):
+    def __init__(self, bg=(0.45, 0.4, 0.8, 1), **kw):
         super().__init__(**kw)
         self.background_normal = self.background_down = ""
         self.background_color = bg
@@ -165,78 +268,70 @@ class Btn(Button):
         self.font_size = sp(15)
         self.bold = True
 
-
 class NavBtn(Button):
     def __init__(self, **kw):
         super().__init__(**kw)
         self.background_normal = self.background_down = ""
         self.background_color = (0, 0, 0, 0)
-        self.color = (0.75, 0.7, 0.9, 1)
+        self.color = (0.8, 0.75, 0.95, 1)
         self.font_size = sp(14)
         self.bold = True
 
-
 class LevelCard(Button):
-    def __init__(self, level, th, unlocked, **kw):
+    def __init__(self, lv, th, unlocked, **kw):
         super().__init__(**kw)
-        self.level, self.th, self.unlocked = level, th, unlocked
+        self.lv, self.th, self.unlocked = lv, th, unlocked
         self.background_normal = self.background_down = ""
         self.background_color = (0, 0, 0, 0)
         self.size_hint = (1, None)
-        self.height = dp(60)
-        self.bind(pos=self._draw, size=self._draw)
+        self.height = dp(58)
+        self.bind(pos=self._d, size=self._d)
 
-    def _draw(self, *a):
+    def _d(self, *a):
         self.canvas.before.clear()
         with self.canvas.before:
             if self.unlocked:
                 bg = get_color_from_hex(self.th["bg"])
                 pl = get_color_from_hex(self.th["plat"])
-                ac = get_color_from_hex(self.th["color"])
-                Color(bg[0], bg[1], bg[2], 1)
-                RoundedRectangle(pos=self.pos, size=self.size, radius=[dp(14)])
+                Color(*bg)
+                RoundedRectangle(pos=self.pos, size=self.size, radius=[dp(12)])
                 Color(pl[0], pl[1], pl[2], 0.95)
-                x0, y0, w, h = self.x, self.y, self.width, self.height
-                Rectangle(pos=(x0 + w * 0.06, y0 + h * 0.2), size=(w * 0.2, h * 0.16))
-                Rectangle(pos=(x0 + w * 0.35, y0 + h * 0.45), size=(w * 0.18, h * 0.16))
-                Rectangle(pos=(x0 + w * 0.6, y0 + h * 0.25), size=(w * 0.24, h * 0.16))
-                Color(ac[0], ac[1], ac[2], 0.35)
-                Line(rounded_rectangle=(self.x + 1, self.y + 1, self.width - 2, self.height - 2, dp(13)), width=1.2)
+                x, y, w, h = self.x, self.y, self.width, self.height
+                # drawn-looking platform lines
+                Rectangle(pos=(x + w * 0.08, y + h * 0.35), size=(w * 0.28, h * 0.12))
+                Rectangle(pos=(x + w * 0.42, y + h * 0.55), size=(w * 0.22, h * 0.12))
+                Rectangle(pos=(x + w * 0.7, y + h * 0.3), size=(w * 0.2, h * 0.12))
             else:
-                Color(0.14, 0.12, 0.2, 1)
-                RoundedRectangle(pos=self.pos, size=self.size, radius=[dp(14)])
-                Color(0.25, 0.22, 0.32, 1)
-                x0, y0, w, h = self.x, self.y, self.width, self.height
-                Rectangle(pos=(x0 + w * 0.06, y0 + h * 0.2), size=(w * 0.2, h * 0.16))
-                Rectangle(pos=(x0 + w * 0.35, y0 + h * 0.45), size=(w * 0.18, h * 0.16))
-                Rectangle(pos=(x0 + w * 0.6, y0 + h * 0.25), size=(w * 0.24, h * 0.16))
+                Color(0.15, 0.13, 0.22, 1)
+                RoundedRectangle(pos=self.pos, size=self.size, radius=[dp(12)])
+                Color(0.28, 0.25, 0.35, 1)
+                x, y, w, h = self.x, self.y, self.width, self.height
+                Rectangle(pos=(x + w * 0.08, y + h * 0.35), size=(w * 0.28, h * 0.12))
+                Rectangle(pos=(x + w * 0.42, y + h * 0.55), size=(w * 0.22, h * 0.12))
 
 
-# ===================== LOADING =====================
+# ========== LOADING ==========
 class LoadingScreen(Screen):
     def __init__(self, **kw):
         super().__init__(**kw)
         root = FloatLayout()
         with root.canvas.before:
-            Color(0.16, 0.12, 0.28, 1)
-            self.bg = Rectangle(size=root.size)
-            Color(0.5, 0.35, 0.9, 0.15)
-            self.c1 = Ellipse(size=(200, 200))
-            Color(0.95, 0.4, 0.55, 0.12)
-            self.c2 = Ellipse(size=(160, 160))
+            Color(0.18, 0.14, 0.3, 1)
+            self.bg = Rectangle()
+            Color(0.55, 0.4, 0.95, 0.14)
+            self.c1 = Ellipse()
+            Color(0.95, 0.45, 0.6, 0.1)
+            self.c2 = Ellipse()
         root.bind(size=self._u, pos=self._u)
-        root.add_widget(Label(text="HAUSEL", font_size=sp(52), bold=True,
-                              color=(1, 0.95, 0.9, 1), size_hint=(1, None), height=dp(64),
-                              pos_hint={"center_x": 0.5, "center_y": 0.6}))
-        root.add_widget(Label(text="by LGStudio", font_size=sp(15),
-                              color=(0.75, 0.65, 0.95, 1), size_hint=(1, None), height=dp(28),
-                              pos_hint={"center_x": 0.5, "center_y": 0.52}))
-        self.bar = ProgressBar(max=100, size_hint=(0.7, None), height=dp(10),
+        root.add_widget(Label(text="HAUSEL", font_size=sp(50), bold=True, color=(1, 0.96, 0.92, 1),
+                              size_hint=(1, None), height=dp(60), pos_hint={"center_x": 0.5, "center_y": 0.6}))
+        root.add_widget(Label(text="by LGStudio", font_size=sp(15), color=(0.8, 0.7, 0.95, 1),
+                              size_hint=(1, None), height=dp(26), pos_hint={"center_x": 0.5, "center_y": 0.52}))
+        self.bar = ProgressBar(max=100, size_hint=(0.68, None), height=dp(9),
                                pos_hint={"center_x": 0.5, "center_y": 0.36})
         root.add_widget(self.bar)
-        self.lbl = Label(text="Loading...", font_size=sp(13), color=(0.7, 0.65, 0.85, 1),
-                         size_hint=(1, None), height=dp(28),
-                         pos_hint={"center_x": 0.5, "center_y": 0.3})
+        self.lbl = Label(text="Loading...", font_size=sp(13), color=(0.75, 0.7, 0.9, 1),
+                         size_hint=(1, None), height=dp(26), pos_hint={"center_x": 0.5, "center_y": 0.3})
         root.add_widget(self.lbl)
         self.add_widget(root)
         self.v = 0
@@ -244,113 +339,109 @@ class LoadingScreen(Screen):
     def _u(self, *a):
         self.bg.pos, self.bg.size = self.pos, self.size
         self.c1.pos = (self.width * 0.5, self.height * 0.65)
-        self.c1.size = (self.width * 0.55, self.width * 0.55)
-        self.c2.pos = (-self.width * 0.1, self.height * 0.05)
-        self.c2.size = (self.width * 0.45, self.width * 0.45)
+        self.c1.size = (self.width * 0.5, self.width * 0.5)
+        self.c2.pos = (-self.width * 0.1, 0)
+        self.c2.size = (self.width * 0.4, self.width * 0.4)
 
     def on_enter(self):
         self.v = 0
-        _load_sounds()
-        Clock.schedule_interval(self._tick, 0.025)
+        load_audio()
+        Clock.schedule_interval(self._t, 0.025)
 
-    def _tick(self, dt):
+    def _t(self, dt):
         self.v += random.uniform(2.5, 5)
         if self.v >= 100:
             self.bar.value = 100
             self.lbl.text = "Let's climb!"
-            Clock.unschedule(self._tick)
-            Clock.schedule_once(lambda dt: setattr(self.manager, "current", "main") or
-                                setattr(self.manager, "transition", FadeTransition(duration=0.3)), 0.35)
+            Clock.unschedule(self._t)
+            Clock.schedule_once(lambda dt: (
+                setattr(self.manager, "transition", FadeTransition(duration=0.28)),
+                setattr(self.manager, "current", "main")
+            ), 0.3)
             return False
         self.bar.value = self.v
         self.lbl.text = "Loading" + "." * (int(self.v / 12) % 4)
         return True
 
 
-# ===================== MAIN =====================
+# ========== MAIN ==========
 class MainScreen(Screen):
     def __init__(self, **kw):
         super().__init__(**kw)
         self.data = load_data()
         self.tab = "play"
-
         col = BoxLayout(orientation="vertical")
         self.body = FloatLayout(size_hint=(1, 1))
         col.add_widget(self.body)
-
-        self.nav = BoxLayout(size_hint=(1, None), height=dp(68), padding=[dp(6), dp(6)], spacing=dp(4))
+        self.nav = BoxLayout(size_hint=(1, None), height=dp(66), padding=[dp(6), dp(6)], spacing=dp(4))
         with self.nav.canvas.before:
-            Color(0.2, 0.16, 0.35, 1)
-            self.nav_bg = Rectangle()
-            Color(0.7, 0.5, 1, 0.5)
-            self.nav_line = Rectangle(size=(0, 3))
-        self.nav.bind(pos=self._nav_u, size=self._nav_u)
-        self.b_shop = NavBtn(text="SHOP")
-        self.b_play = NavBtn(text="PLAY")
-        self.b_set = NavBtn(text="SETTINGS")
-        self.b_shop.bind(on_press=lambda x: self.switch("shop"))
-        self.b_play.bind(on_press=lambda x: self.switch("play"))
-        self.b_set.bind(on_press=lambda x: self.switch("settings"))
-        for b in (self.b_shop, self.b_play, self.b_set):
+            Color(0.22, 0.18, 0.38, 1)
+            self.nbg = Rectangle()
+            Color(0.75, 0.55, 1, 0.55)
+            self.nln = Rectangle(size=(0, 3))
+        self.nav.bind(pos=self._nu, size=self._nu)
+        self.bs = NavBtn(text="SHOP")
+        self.bp = NavBtn(text="PLAY")
+        self.bt = NavBtn(text="SETTINGS")
+        self.bs.bind(on_press=lambda x: self.sw("shop"))
+        self.bp.bind(on_press=lambda x: self.sw("play"))
+        self.bt.bind(on_press=lambda x: self.sw("settings"))
+        for b in (self.bs, self.bp, self.bt):
             self.nav.add_widget(b)
         col.add_widget(self.nav)
         self.add_widget(col)
-
         with self.canvas.before:
-            Color(0.18, 0.14, 0.28, 1)
+            Color(0.2, 0.16, 0.3, 1)
             self.sbg = Rectangle()
-        self.bind(pos=lambda *a: setattr(self.sbg, "pos", self.pos) or setattr(self.sbg, "size", self.size),
-                  size=lambda *a: setattr(self.sbg, "pos", self.pos) or setattr(self.sbg, "size", self.size))
+        self.bind(pos=lambda *a: (setattr(self.sbg, "pos", self.pos), setattr(self.sbg, "size", self.size)),
+                  size=lambda *a: (setattr(self.sbg, "pos", self.pos), setattr(self.sbg, "size", self.size)))
+        self.wshop = self._shop()
+        self.wplay = self._play()
+        self.wset = self._set()
+        self.sw("play")
 
-        self.w_shop = self._mk_shop()
-        self.w_play = self._mk_play()
-        self.w_set = self._mk_set()
-        self.switch("play")
-
-    def _nav_u(self, *a):
-        self.nav_bg.pos, self.nav_bg.size = self.nav.pos, self.nav.size
-        self.nav_line.pos = (self.nav.x, self.nav.top - 3)
-        self.nav_line.size = (self.nav.width, 3)
+    def _nu(self, *a):
+        self.nbg.pos, self.nbg.size = self.nav.pos, self.nav.size
+        self.nln.pos = (self.nav.x, self.nav.top - 3)
+        self.nln.size = (self.nav.width, 3)
 
     def on_enter(self, *a):
         self.data = load_data()
         if self.data.get("music_on", True):
             menu_music(True)
-        self.refresh()
+        if self.tab == "shop":
+            self._rs()
+        elif self.tab == "play":
+            self._rp()
 
     def on_leave(self, *a):
         menu_music(False)
 
-    def switch(self, tab):
-        if self.data.get("vibration_on", True):
-            do_vibrate(15)
+    def sw(self, tab):
+        if self.data.get("vibration_on"):
+            do_vibrate(14)
         sfx("click", self.data.get("sound_on", True))
         self.tab = tab
         self.body.clear_widgets()
-        for b in (self.b_shop, self.b_play, self.b_set):
-            b.color = (0.65, 0.6, 0.8, 1)
+        for b in (self.bs, self.bp, self.bt):
+            b.color = (0.7, 0.65, 0.85, 1)
         if tab == "shop":
-            self.body.add_widget(self.w_shop)
-            self.b_shop.color = (1, 0.9, 0.4, 1)
-            self._ref_shop()
+            self.body.add_widget(self.wshop)
+            self.bs.color = (1, 0.9, 0.4, 1)
+            self._rs()
         elif tab == "play":
-            self.body.add_widget(self.w_play)
-            self.b_play.color = (0.5, 1, 0.65, 1)
-            self._ref_play()
+            self.body.add_widget(self.wplay)
+            self.bp.color = (0.5, 1, 0.7, 1)
+            self._rp()
         else:
-            self.body.add_widget(self.w_set)
-            self.b_set.color = (0.7, 0.85, 1, 1)
+            self.body.add_widget(self.wset)
+            self.bt.color = (0.75, 0.85, 1, 1)
+            self.data = load_data()
+            self._refresh_accounts()
 
-    def refresh(self):
-        if self.tab == "shop":
-            self._ref_shop()
-        elif self.tab == "play":
-            self._ref_play()
-
-    # ---- SHOP ----
-    def _mk_shop(self):
-        root = BoxLayout(orientation="vertical", padding=[dp(12), dp(8), dp(12), dp(4)], spacing=dp(4))
-        head = BoxLayout(size_hint=(1, None), height=dp(44))
+    def _shop(self):
+        root = BoxLayout(orientation="vertical", padding=[dp(12), dp(8), dp(12), dp(4)], spacing=dp(6))
+        head = BoxLayout(size_hint=(1, None), height=dp(42))
         head.add_widget(Label(text="SHOP", font_size=sp(22), bold=True, color=(1, 0.9, 0.4, 1),
                               size_hint=(0.4, 1), halign="left"))
         self.cups_l = Label(text="Cups: 0", font_size=sp(16), bold=True, color=(1, 0.88, 0.35, 1),
@@ -360,50 +451,67 @@ class MainScreen(Screen):
         root.add_widget(head)
 
         sc = ScrollView(size_hint=(1, 1), do_scroll_x=False, bar_width=dp(4))
-        self.shop_box = BoxLayout(orientation="vertical", size_hint_y=None, spacing=dp(8),
-                                  padding=[0, 0, 0, dp(140)])
-        self.shop_box.bind(minimum_height=self.shop_box.setter("height"))
-        sc.add_widget(self.shop_box)
+        self.sbox = BoxLayout(orientation="vertical", size_hint_y=None, spacing=dp(8),
+                              padding=[0, 0, 0, dp(20)])
+        self.sbox.bind(minimum_height=self.sbox.setter("height"))
+        sc.add_widget(self.sbox)
         root.add_widget(sc)
 
-        # promo
-        prow = BoxLayout(size_hint=(1, None), height=dp(42), spacing=dp(8))
-        self.code_in = TextInput(hint_text="Promo code...", multiline=False, font_size=sp(14),
-                                 size_hint=(0.7, 1), background_color=(0.22, 0.18, 0.35, 1),
-                                 foreground_color=(1, 1, 1, 1), cursor_color=(1, 1, 1, 1),
-                                 padding=[dp(10), dp(10)])
+        # Promo block — always at the very bottom of SHOP
+        promo_box = BoxLayout(orientation="vertical", size_hint=(1, None),
+                              height=dp(100), spacing=dp(4), padding=[0, dp(4), 0, dp(2)])
+        promo_box.add_widget(Label(
+            text="Промокод", font_size=sp(13), bold=True,
+            color=(0.85, 0.8, 1, 1), size_hint=(1, None), height=dp(20)
+        ))
+        prow = BoxLayout(size_hint=(1, None), height=dp(44), spacing=dp(8))
+        self.code_in = TextInput(
+            hint_text="Введи код...", multiline=False, font_size=sp(14),
+            size_hint=(0.58, 1), background_color=(0.25, 0.2, 0.4, 1),
+            foreground_color=(1, 1, 1, 1), cursor_color=(1, 1, 1, 1),
+            padding=[dp(10), dp(10)]
+        )
         prow.add_widget(self.code_in)
-        ok = Btn(text="OK", bg=(0.35, 0.7, 0.4, 1), size_hint=(0.3, 1))
-        ok.bind(on_press=self._apply_code)
-        prow.add_widget(ok)
-        root.add_widget(prow)
+        okb = Btn(text="Активировать", bg=(0.35, 0.72, 0.42, 1), size_hint=(0.42, 1))
+        okb.font_size = sp(13)
+        okb.bind(on_press=self._code)
+        prow.add_widget(okb)
+        promo_box.add_widget(prow)
+        self.code_msg = Label(
+            text="", font_size=sp(12),
+            color=(1, 0.85, 0.4, 1), size_hint=(1, None), height=dp(22),
+            halign="center"
+        )
+        self.code_msg.bind(size=self.code_msg.setter("text_size"))
+        promo_box.add_widget(self.code_msg)
+        root.add_widget(promo_box)
         return root
 
-    def _ref_shop(self):
+    def _rs(self):
         self.cups_l.text = f"Cups: {self.data['cups']}"
-        self.shop_box.clear_widgets()
-        self.shop_box.add_widget(Label(text="SKINS", font_size=sp(12), bold=True,
-                                       color=(0.8, 0.75, 1, 1), size_hint=(1, None), height=dp(22)))
+        self.sbox.clear_widgets()
+        self.sbox.add_widget(Label(text="SKINS", font_size=sp(12), bold=True,
+                                   color=(0.85, 0.8, 1, 1), size_hint=(1, None), height=dp(22)))
         for k, s in SKINS.items():
-            self.shop_box.add_widget(self._row(s["name"], f"x{s['bonus']}" if s["bonus"] > 1 else "base",
-                                               s["price"], k in self.data["owned_skins"],
-                                               self.data["selected_skin"] == k, s["color"], "skin", k))
-        self.shop_box.add_widget(Label(text="TRAILS", font_size=sp(12), bold=True,
-                                       color=(0.8, 0.75, 1, 1), size_hint=(1, None), height=dp(26)))
+            self.sbox.add_widget(self._row(s["name"], f"x{s['bonus']}" if s["bonus"] > 1 else "base",
+                                           s["price"], k in self.data["owned_skins"],
+                                           self.data["selected_skin"] == k, s["color"], "skin", k))
+        self.sbox.add_widget(Label(text="TRAILS", font_size=sp(12), bold=True,
+                                   color=(0.85, 0.8, 1, 1), size_hint=(1, None), height=dp(26)))
         for k, t in TRAILS.items():
-            self.shop_box.add_widget(self._row(t["name"], f"x{t['bonus']}" if t["bonus"] > 1 else "—",
-                                               t["price"], k in self.data["owned_trails"],
-                                               self.data["selected_trail"] == k, t["color"], "trail", k))
+            self.sbox.add_widget(self._row(t["name"], f"x{t['bonus']}" if t["bonus"] > 1 else "—",
+                                           t["price"], k in self.data["owned_trails"],
+                                           self.data["selected_trail"] == k, t["color"], "trail", k))
 
-    def _row(self, title, sub, price, owned, selected, color, typ, key):
-        box = BoxLayout(orientation="horizontal", size_hint=(1, None), height=dp(54),
+    def _row(self, title, sub, price, owned, sel, color, typ, key):
+        box = BoxLayout(orientation="horizontal", size_hint=(1, None), height=dp(52),
                         padding=[dp(10), dp(5)], spacing=dp(10))
         with box.canvas.before:
-            Color(0.24, 0.2, 0.4, 1)
+            Color(0.26, 0.22, 0.42, 1)
             rr = RoundedRectangle(radius=[dp(12)])
         box.bind(pos=lambda *a: setattr(rr, "pos", box.pos), size=lambda *a: setattr(rr, "size", box.size))
         col = get_color_from_hex(color)
-        prev = Widget(size_hint=(None, None), size=(dp(32), dp(32)))
+        prev = Widget(size_hint=(None, None), size=(dp(30), dp(30)))
         with prev.canvas:
             Color(*col)
             el = Ellipse()
@@ -419,14 +527,14 @@ class MainScreen(Screen):
         tb.add_widget(t1)
         tb.add_widget(t2)
         box.add_widget(tb)
-        if selected:
-            b = Btn(text="ON", bg=(0.3, 0.7, 0.4, 1), size_hint=(None, None), size=(dp(70), dp(32)))
+        if sel:
+            b = Btn(text="ON", bg=(0.3, 0.7, 0.4, 1), size_hint=(None, None), size=(dp(68), dp(30)))
             b.disabled = True
         elif owned:
-            b = Btn(text="USE", bg=(0.4, 0.45, 0.85, 1), size_hint=(None, None), size=(dp(70), dp(32)))
-            b.bind(on_press=lambda x, t=typ, k=key: self._select(t, k))
+            b = Btn(text="USE", bg=(0.4, 0.45, 0.85, 1), size_hint=(None, None), size=(dp(68), dp(30)))
+            b.bind(on_press=lambda x, t=typ, k=key: self._sel(t, k))
         else:
-            b = Btn(text=str(price), bg=(0.8, 0.5, 0.25, 1), size_hint=(None, None), size=(dp(70), dp(32)))
+            b = Btn(text=str(price), bg=(0.8, 0.5, 0.25, 1), size_hint=(None, None), size=(dp(68), dp(30)))
             b.bind(on_press=lambda x, t=typ, k=key, p=price: self._buy(t, k, p))
         box.add_widget(b)
         return box
@@ -435,7 +543,7 @@ class MainScreen(Screen):
         if self.data["cups"] < price:
             return
         if self.data.get("vibration_on"):
-            do_vibrate(22)
+            do_vibrate(20)
         sfx("click", self.data.get("sound_on", True))
         self.data["cups"] -= price
         if typ == "skin":
@@ -447,58 +555,88 @@ class MainScreen(Screen):
                 self.data["owned_trails"].append(key)
             self.data["selected_trail"] = key
         save_data(self.data)
-        self._ref_shop()
+        self._rs()
 
-    def _select(self, typ, key):
+    def _sel(self, typ, key):
         if self.data.get("vibration_on"):
-            do_vibrate(15)
+            do_vibrate(14)
         sfx("click", self.data.get("sound_on", True))
         if typ == "skin":
             self.data["selected_skin"] = key
         else:
             self.data["selected_trail"] = key
         save_data(self.data)
-        self._ref_shop()
+        self._rs()
 
-    def _apply_code(self, *a):
+    def _code(self, *a):
         code = self.code_in.text.strip().upper()
         self.code_in.text = ""
-        if not code or code in self.data.get("used_codes", []):
+
+        if not code:
+            self.code_msg.color = (1, 0.55, 0.45, 1)
+            self.code_msg.text = "Введи промокод"
             return
+
+        if code in self.data.get("used_codes", []):
+            self.code_msg.color = (1, 0.7, 0.4, 1)
+            self.code_msg.text = "Этот код уже использован"
+            return
+
         if code not in PROMO:
+            self.code_msg.color = (1, 0.45, 0.4, 1)
+            self.code_msg.text = "Такого промокода нет"
+            if self.data.get("vibration_on"):
+                do_vibrate(20)
             return
-        r = PROMO[code]
+
+        reward = PROMO[code]
         if self.data.get("vibration_on"):
             do_vibrate(40)
         sfx("win", self.data.get("sound_on", True))
-        if "cups" in r:
-            self.data["cups"] += r["cups"]
+
+        got = []
+        if "cups" in reward:
+            self.data["cups"] += reward["cups"]
+            got.append(f"+{reward['cups']} кубков")
+        if "skin" in reward:
+            sk = reward["skin"]
+            if sk not in self.data["owned_skins"]:
+                self.data["owned_skins"].append(sk)
+            self.data["selected_skin"] = sk
+            got.append(f"скин {sk}")
+        if "trail" in reward:
+            tr = reward["trail"]
+            if tr not in self.data["owned_trails"]:
+                self.data["owned_trails"].append(tr)
+            self.data["selected_trail"] = tr
+            got.append(f"след {tr}")
+
         self.data.setdefault("used_codes", []).append(code)
         save_data(self.data)
-        self._ref_shop()
+        self.code_msg.color = (0.45, 1, 0.55, 1)
+        self.code_msg.text = "Активировано: " + ", ".join(got)
+        self._rs()
 
-    # ---- PLAY ----
-    def _mk_play(self):
+    def _play(self):
         root = BoxLayout(orientation="vertical", padding=[dp(12), dp(8), dp(12), dp(4)], spacing=dp(4))
-        top = BoxLayout(size_hint=(1, None), height=dp(40))
+        top = BoxLayout(size_hint=(1, None), height=dp(38))
         top.add_widget(Label(text="LEVELS", font_size=sp(20), bold=True, color=(0.5, 1, 0.7, 1)))
-        self.pcups = Label(text="Cups: 0", font_size=sp(15), bold=True, color=(1, 0.88, 0.35, 1))
-        top.add_widget(self.pcups)
+        self.pc = Label(text="Cups: 0", font_size=sp(15), bold=True, color=(1, 0.88, 0.35, 1))
+        top.add_widget(self.pc)
         root.add_widget(top)
         sc = ScrollView(size_hint=(1, 1), do_scroll_x=False, bar_width=dp(4))
-        self.lv_box = GridLayout(cols=1, size_hint_y=None, spacing=dp(8),
-                                 padding=[0, 0, 0, dp(140)])
-        self.lv_box.bind(minimum_height=self.lv_box.setter("height"))
-        sc.add_widget(self.lv_box)
+        self.lbox = GridLayout(cols=1, size_hint_y=None, spacing=dp(7), padding=[0, 0, 0, dp(120)])
+        self.lbox.bind(minimum_height=self.lbox.setter("height"))
+        sc.add_widget(self.lbox)
         root.add_widget(sc)
         return root
 
-    def _ref_play(self):
-        self.pcups.text = f"Cups: {self.data['cups']}"
-        self.lv_box.clear_widgets()
+    def _rp(self):
+        self.pc.text = f"Cups: {self.data['cups']}"
+        self.lbox.clear_widgets()
         un = self.data.get("unlocked_levels", 1)
         for lv in range(1, 101):
-            th = theme_for(lv)
+            th = theme(lv)
             ok = lv <= un
             card = LevelCard(lv, th, ok)
             if ok:
@@ -511,95 +649,216 @@ class MainScreen(Screen):
                 card.color = (0.45, 0.42, 0.55, 1)
                 card.font_size = sp(13)
                 card.disabled = True
-            self.lv_box.add_widget(card)
+            self.lbox.add_widget(card)
 
     def _go(self, level):
         if self.data.get("vibration_on"):
-            do_vibrate(20)
+            do_vibrate(18)
         sfx("click", self.data.get("sound_on", True))
         menu_music(False)
         g = self.manager.get_screen("game")
         g.setup(level, self.data)
-        self.manager.transition = SlideTransition(direction="up", duration=0.22)
+        self.manager.transition = SlideTransition(direction="up", duration=0.2)
         self.manager.current = "game"
 
-    # ---- SETTINGS ----
-    def _mk_set(self):
-        root = BoxLayout(orientation="vertical", padding=[dp(16), dp(12)], spacing=dp(12))
-        root.add_widget(Label(text="SETTINGS", font_size=sp(22), bold=True,
-                              color=(0.75, 0.85, 1, 1), size_hint=(1, None), height=dp(40)))
+    def _set(self):
+        root = BoxLayout(orientation="vertical", padding=[dp(14), dp(10)], spacing=dp(8))
+        root.add_widget(Label(text="SETTINGS", font_size=sp(22), bold=True, color=(0.75, 0.85, 1, 1),
+                              size_hint=(1, None), height=dp(36)))
+
+        self.acc_label = Label(text="", font_size=sp(13), color=(1, 0.9, 0.5, 1),
+                               size_hint=(1, None), height=dp(22), halign="left")
+        self.acc_label.bind(size=self.acc_label.setter("text_size"))
+        root.add_widget(self.acc_label)
+
+        root.add_widget(Label(text="АККАУНТЫ", font_size=sp(12), bold=True,
+                              color=(0.8, 0.75, 1, 1), size_hint=(1, None), height=dp(20)))
+        sc = ScrollView(size_hint=(1, None), height=dp(130), do_scroll_x=False, bar_width=dp(3))
+        self.acc_box = BoxLayout(orientation="vertical", size_hint_y=None, spacing=dp(5))
+        self.acc_box.bind(minimum_height=self.acc_box.setter("height"))
+        sc.add_widget(self.acc_box)
+        root.add_widget(sc)
+
+        crow = BoxLayout(size_hint=(1, None), height=dp(40), spacing=dp(6))
+        self.acc_name_in = TextInput(
+            hint_text="Имя нового аккаунта", multiline=False, font_size=sp(13),
+            size_hint=(0.55, 1), background_color=(0.25, 0.2, 0.4, 1),
+            foreground_color=(1, 1, 1, 1), cursor_color=(1, 1, 1, 1),
+            padding=[dp(8), dp(8)]
+        )
+        crow.add_widget(self.acc_name_in)
+        cb = Btn(text="Создать", bg=(0.3, 0.65, 0.4, 1), size_hint=(0.45, 1))
+        cb.font_size = sp(13)
+        cb.bind(on_press=self._acc_create)
+        crow.add_widget(cb)
+        root.add_widget(crow)
+
+        self.acc_msg = Label(text="", font_size=sp(11), color=(0.7, 0.9, 0.7, 1),
+                             size_hint=(1, None), height=dp(18))
+        root.add_widget(self.acc_msg)
+
         for lab, attr, h in [("Music", "music_on", self._tm), ("Sound Effects", "sound_on", self._ts),
                              ("Vibration", "vibration_on", self._tv)]:
-            row = BoxLayout(size_hint=(1, None), height=dp(44))
-            row.add_widget(Label(text=lab, font_size=sp(15), color=(0.95, 0.92, 1, 1)))
+            row = BoxLayout(size_hint=(1, None), height=dp(38))
+            row.add_widget(Label(text=lab, font_size=sp(14), color=(0.95, 0.92, 1, 1)))
             sw = Switch(active=self.data.get(attr, True))
             sw.bind(active=h)
-            setattr(self, f"sw_{attr}", sw)
+            setattr(self, "sw_" + attr, sw)
             row.add_widget(sw)
             root.add_widget(row)
+
         root.add_widget(Widget(size_hint=(1, 1)))
-        rb = Btn(text="Reset Progress", bg=(0.7, 0.25, 0.3, 1), size_hint=(1, None), height=dp(46))
+        rb = Btn(text="Сброс прогресса аккаунта", bg=(0.7, 0.25, 0.3, 1),
+                 size_hint=(1, None), height=dp(40))
+        rb.font_size = sp(13)
         rb.bind(on_press=self._reset)
         root.add_widget(rb)
-        info = Label(text="HAUSEL  v0.3\nby LGStudio", font_size=sp(12),
-                     color=(0.55, 0.5, 0.7, 1), size_hint=(1, None), height=dp(48),
+        info = Label(text="HAUSEL  v0.5\nby LGStudio", font_size=sp(11),
+                     color=(0.55, 0.5, 0.7, 1), size_hint=(1, None), height=dp(38),
                      halign="center")
         info.bind(size=info.setter("text_size"))
         root.add_widget(info)
         return root
 
+    def _refresh_accounts(self):
+        if not hasattr(self, "acc_box"):
+            return
+        accs, cur = list_accounts()
+        self.acc_label.text = f"Сейчас: {self.data.get('_account_name', 'Игрок')}"
+        self.acc_box.clear_widgets()
+        for acc in accs:
+            aid = acc["id"]
+            is_cur = aid == cur
+            row = BoxLayout(size_hint=(1, None), height=dp(38), spacing=dp(4), padding=[dp(6), dp(2)])
+            with row.canvas.before:
+                Color(*(0.3, 0.26, 0.48, 1) if is_cur else (0.2, 0.17, 0.32, 1))
+                rr = RoundedRectangle(radius=[dp(8)])
+            row.bind(pos=lambda w, *a, r=rr: setattr(r, "pos", w.pos),
+                     size=lambda w, *a, r=rr: setattr(r, "size", w.size))
+            cups = (acc.get("data") or {}).get("cups", 0)
+            lbl = Label(
+                text=f"{'● ' if is_cur else '○ '}{acc.get('name', 'Игрок')} ({cups})",
+                font_size=sp(12),
+                color=(1, 0.95, 0.9, 1) if is_cur else (0.75, 0.7, 0.85, 1),
+                size_hint=(0.55, 1), halign="left", valign="middle"
+            )
+            lbl.bind(size=lbl.setter("text_size"))
+            row.add_widget(lbl)
+            if not is_cur:
+                sb = Btn(text="Войти", bg=(0.35, 0.5, 0.85, 1), size_hint=(0.25, 1))
+                sb.font_size = sp(11)
+                sb.bind(on_press=lambda x, a=aid: self._acc_switch(a))
+                row.add_widget(sb)
+            else:
+                row.add_widget(Label(text="активен", font_size=sp(11),
+                                     color=(0.5, 0.9, 0.6, 1), size_hint=(0.25, 1)))
+            db = Btn(text="X", bg=(0.6, 0.25, 0.3, 1), size_hint=(0.2, 1))
+            db.font_size = sp(12)
+            db.bind(on_press=lambda x, a=aid: self._acc_del(a))
+            row.add_widget(db)
+            self.acc_box.add_widget(row)
+
+    def _acc_create(self, *a):
+        name = self.acc_name_in.text.strip()
+        self.acc_name_in.text = ""
+        create_account(name)
+        if self.data.get("vibration_on"):
+            do_vibrate(25)
+        sfx("click", self.data.get("sound_on", True))
+        self.data = load_data()
+        self.acc_msg.text = f"Создан: {self.data.get('_account_name')}"
+        self.acc_msg.color = (0.5, 1, 0.6, 1)
+        self._refresh_accounts()
+        self.sw_music_on.active = self.data.get("music_on", True)
+        self.sw_sound_on.active = self.data.get("sound_on", True)
+        self.sw_vibration_on.active = self.data.get("vibration_on", True)
+
+    def _acc_switch(self, aid):
+        save_data(self.data)
+        switch_account(aid)
+        if self.data.get("vibration_on"):
+            do_vibrate(20)
+        sfx("click", self.data.get("sound_on", True))
+        self.data = load_data()
+        self.acc_msg.text = f"Вход: {self.data.get('_account_name')}"
+        self.acc_msg.color = (0.6, 0.85, 1, 1)
+        self._refresh_accounts()
+        self.sw_music_on.active = self.data.get("music_on", True)
+        self.sw_sound_on.active = self.data.get("sound_on", True)
+        self.sw_vibration_on.active = self.data.get("vibration_on", True)
+        menu_music(self.data.get("music_on", True))
+
+    def _acc_del(self, aid):
+        if not delete_account(aid):
+            self.acc_msg.text = "Нельзя удалить единственный аккаунт"
+            self.acc_msg.color = (1, 0.55, 0.4, 1)
+            return
+        if self.data.get("vibration_on"):
+            do_vibrate(30)
+        self.data = load_data()
+        self.acc_msg.text = "Аккаунт удалён"
+        self.acc_msg.color = (1, 0.7, 0.5, 1)
+        self._refresh_accounts()
+        self.sw_music_on.active = self.data.get("music_on", True)
+        self.sw_sound_on.active = self.data.get("sound_on", True)
+        self.sw_vibration_on.active = self.data.get("vibration_on", True)
+
     def _tm(self, i, v):
         self.data["music_on"] = v
         save_data(self.data)
         menu_music(v)
-        if self.data.get("vibration_on"):
-            do_vibrate(12)
 
     def _ts(self, i, v):
         self.data["sound_on"] = v
         save_data(self.data)
-        if self.data.get("vibration_on"):
-            do_vibrate(12)
 
     def _tv(self, i, v):
         self.data["vibration_on"] = v
         save_data(self.data)
         if v:
-            do_vibrate(25)
+            do_vibrate(22)
 
     def _reset(self, *a):
-        if self.data.get("vibration_on"):
-            do_vibrate(35)
-        self.data = DEFAULT.copy()
+        # reset only current account progress, keep name/id
+        aid = self.data.get("_account_id")
+        aname = self.data.get("_account_name", "Игрок")
+        self.data = _fresh_progress()
+        self.data["_account_id"] = aid
+        self.data["_account_name"] = aname
         save_data(self.data)
         self.sw_music_on.active = True
         self.sw_sound_on.active = True
         self.sw_vibration_on.active = True
         menu_music(True)
-        self.switch(self.tab)
+        self.acc_msg.text = "Прогресс аккаунта сброшен"
+        self.acc_msg.color = (1, 0.7, 0.5, 1)
+        self._refresh_accounts()
+        self.sw(self.tab)
 
 
-# ===================== GAME WORLD =====================
+# ========== GAME ==========
 class Particle:
     def __init__(self, x, y, c, life=0.5):
         self.x, self.y = x, y
-        self.vx = random.uniform(-60, 60)
-        self.vy = random.uniform(20, 90)
+        self.vx = random.uniform(-50, 50)
+        self.vy = random.uniform(20, 80)
         self.life = self.max = life
         self.c = c
-        self.sz = random.uniform(2.5, 6)
+        self.sz = random.uniform(2.5, 5.5)
 
 
 class GameWorld(Widget):
+    """One-way platforms: pass through from below, solid from above."""
+
     def __init__(self, **kw):
         super().__init__(**kw)
-        self.reset_state()
+        self._init()
         self._ev = None
 
-    def reset_state(self):
+    def _init(self):
         self.level = 1
         self.data = {}
-        self.th = theme_for(1)
+        self.th = theme(1)
         self.px = self.py = self.vx = self.vy = 0
         self.pw, self.ph = 22, 32
         self.ground = False
@@ -608,7 +867,7 @@ class GameWorld(Widget):
         self.won = False
         self.dtimer = 0
         self.cam = 0
-        self.plats = []
+        self.plats = []  # (x, y, w, h) — one-way
         self.haz = []
         self.goal = None
         self.wh = 2000
@@ -617,18 +876,17 @@ class GameWorld(Widget):
         self.jbuf = 0
         self.parts = []
         self.ttrail = 0
-        self.was_ground = False
-        # tuned physics — reliable jumps
-        self.G = -980
-        self.SPEED = 220
-        self.JUMP = 520
-        self.MAXFALL = -600
+        self.was_g = False
+        self.G = -1000
+        self.SPEED = 230
+        self.JUMP = 540
+        self.MAXFALL = -620
 
     def start(self, level, data):
-        self.reset_state()
+        self._init()
         self.level = level
         self.data = data
-        self.th = theme_for(level)
+        self.th = theme(level)
         self._build()
         self._draw()
         if self._ev:
@@ -641,57 +899,65 @@ class GameWorld(Widget):
             self._ev = None
 
     def _build(self):
-        """Deterministic fair levels. Max gap always within jump reach."""
+        """Full-width style levels with one-way platforms filling the climb."""
         self.plats = []
         self.haz = []
         W = max(float(self.width), 320.0)
-        rng = random.Random(self.level * 9973 + 17)
+        rng = random.Random(self.level * 7919 + 3)
 
-        # jump height ≈ JUMP^2 / (2*|G|) ≈ 520^2 / 1960 ≈ 138 px
-        # keep vertical gaps well under that
-        max_gap = 72 + min(self.level // 10, 20)   # 72..92
-        min_gap = 42
-        min_w = max(85, 130 - self.level // 4)
-        max_w = max(min_w + 25, 160 - self.level // 5)
-        max_dx = 48 + min(self.level // 8, 22)
-
-        # start
-        sw = min(W * 0.6, 220)
-        sx = (W - sw) / 2
-        self.plats.append((sx, 40, sw, 18))
+        # Start floor — solid feel, wide
+        self.plats.append((W * 0.05, 30, W * 0.9, 14))
         self.px = W / 2 - self.pw / 2
-        self.py = 60
+        self.py = 46
 
-        n = 8 + min(self.level // 5, 7)
-        y = 40.0
-        px, pw = sx, sw
+        # Vertical spacing: easy early, a bit tighter later but always jumpable
+        # jump height ~ 540^2 / 2000 ≈ 146 px
+        gap_base = 58
+        gap_extra = min(self.level // 8, 18)
+        n = 12 + min(self.level // 4, 10)  # more platforms, fuller field
 
+        y = 30.0
         for i in range(n):
-            gap = min_gap + (max_gap - min_gap) * (0.35 + 0.65 * rng.random())
-            gap = min(gap, 95)
+            gap = gap_base + gap_extra * (0.5 + 0.5 * rng.random())
+            gap = min(gap, 88)  # never too high
             y += gap
-            w = min_w + (max_w - min_w) * rng.random()
-            # horizontal offset limited so always reachable
-            dx = (rng.random() * 2 - 1) * max_dx
-            x = px + pw / 2 + dx - w / 2
-            x = max(16, min(W - w - 16, x))
-            self.plats.append((x, y, w, 16))
 
-            # rare small spikes, never full width, never on first 2
-            if i >= 2 and self.level >= 4 and rng.random() < min(0.1 + self.level * 0.008, 0.25):
-                hw = min(22, w * 0.28)
-                hx = x + 12 + (w - hw - 24) * rng.random()
-                if hx > x + 10 and hx + hw < x + w - 10:
-                    self.haz.append((hx, y + 16, hw, 11))
-            px, pw = x, w
+            # Platform width: often wide, sometimes split feel
+            # Prefer wide platforms so level feels "full"
+            if rng.random() < 0.55:
+                # one wide platform
+                w = W * (0.45 + 0.4 * rng.random())
+                x = (W - w) * rng.random()
+                x = max(8, min(W - w - 8, x))
+                self.plats.append((x, y, w, 12))
+                # occasional spike on top (not whole platform)
+                if i >= 3 and self.level >= 5 and rng.random() < min(0.12 + self.level * 0.006, 0.22):
+                    hw = min(24, w * 0.25)
+                    hx = x + 16 + max(0, (w - hw - 32)) * rng.random()
+                    self.haz.append((hx, y + 12, hw, 10))
+            else:
+                # two platforms side by side (fuller field)
+                w1 = W * (0.28 + 0.15 * rng.random())
+                w2 = W * (0.28 + 0.15 * rng.random())
+                gap_x = 20 + 30 * rng.random()
+                total = w1 + gap_x + w2
+                if total > W - 16:
+                    scale = (W - 16) / total
+                    w1 *= scale
+                    w2 *= scale
+                    gap_x *= scale
+                x1 = 8 + (W - 16 - w1 - gap_x - w2) * rng.random()
+                x2 = x1 + w1 + gap_x
+                self.plats.append((x1, y, w1, 12))
+                self.plats.append((x2, y, w2, 12))
 
-        # goal platform — always close and wide
-        y += 55
-        gw = min(W * 0.55, 200)
+        # Goal — wide top platform
+        y += 50
+        gw = W * 0.7
         gx = (W - gw) / 2
-        self.plats.append((gx, y, gw, 18))
-        self.goal = (gx + gw * 0.2, y + 18, gw * 0.6, 55)
-        self.wh = y + 250
+        self.plats.append((gx, y, gw, 14))
+        self.goal = (gx + gw * 0.25, y + 14, gw * 0.5, 50)
+        self.wh = y + 280
 
     def update(self, dt):
         if not self.alive:
@@ -728,65 +994,75 @@ class GameWorld(Widget):
 
         self.vy += self.G * dt
         self.vy = max(self.vy, self.MAXFALL)
+
         self.px += self.vx * dt
         self.px = max(0, min(self.width - self.pw, self.px))
         self.py += self.vy * dt
-        self.was_ground = self.ground
-        self.ground = False
-        self._collide()
 
-        if self.ground and not self.was_ground:
+        self.was_g = self.ground
+        self.ground = False
+        self._collide_oneway()
+
+        if self.ground and not self.was_g:
             sfx("land", self.data.get("sound_on", True))
 
         if self._hazard():
             self._die()
             return
-        if self.py < self.cam - 120:
+        if self.py < self.cam - 100:
             self._die()
             return
-        if self.goal and self._hit(self.px, self.py, self.pw, self.ph, *self.goal):
+        if self.goal and self._ov(self.px, self.py, self.pw, self.ph, *self.goal):
             self._win()
             return
 
-        # camera: keep player in lower third so you SEE platforms above
-        target = self.py - self.height * 0.28
-        self.cam += (target - self.cam) * min(1.0, 8 * dt)
+        # camera: player in lower part → lots of space above to see next platforms
+        target = self.py - self.height * 0.25
+        self.cam += (target - self.cam) * min(1.0, 9 * dt)
         if self.cam < 0:
             self.cam = 0
 
         self.ttrail += dt
         tk = self.data.get("selected_trail", "none")
-        if tk != "none" and self.ttrail > 0.03 and (abs(self.vx) > 20 or abs(self.vy) > 40):
+        if tk != "none" and self.ttrail > 0.03 and (abs(self.vx) > 15 or abs(self.vy) > 30):
             self.ttrail = 0
             c = get_color_from_hex(TRAILS[tk]["color"])
-            self.parts.append(Particle(self.px + self.pw / 2, self.py + 4, c, 0.4))
+            self.parts.append(Particle(self.px + self.pw / 2, self.py + 3, c, 0.4))
 
         self._parts(dt)
         self._draw()
 
-    def _collide(self):
+    def _collide_oneway(self):
+        """
+        ONE-WAY PLATFORMS:
+        - Going up (vy > 0): pass through, no collision
+        - Going down (vy <= 0): land on top, cannot fall through
+        """
+        if self.vy > 0:
+            return  # flying up — ignore platforms
+
+        feet = self.py
         for (x, y, w, h) in self.plats:
-            if self._hit(self.px, self.py, self.pw, self.ph, x, y, w, h):
-                if self.vy <= 0 and (self.py + self.ph) >= y + h - 4:
-                    self.py = y + h
-                    self.vy = 0
-                    self.ground = True
-                elif self.vy > 0 and self.py < y + 4:
-                    self.py = y - self.ph
-                    self.vy = 0
-                else:
-                    if self.px + self.pw / 2 < x + w / 2:
-                        self.px = x - self.pw
-                    else:
-                        self.px = x + w
+            # only care about top surface
+            top = y + h
+            # player horizontally overlaps platform
+            if self.px + self.pw <= x or self.px >= x + w:
+                continue
+            # was above or at surface, now would go through
+            # land if feet are near the top surface
+            if feet <= top and feet >= top - abs(self.vy) * 0.05 - 8:
+                # only if coming from above (previous feet were roughly at or above)
+                self.py = top
+                self.vy = 0
+                self.ground = True
 
     def _hazard(self):
         for (x, y, w, h) in self.haz:
-            if self._hit(self.px + 4, self.py, self.pw - 8, self.ph - 4, x, y, w, h):
+            if self._ov(self.px + 3, self.py, self.pw - 6, self.ph - 3, x, y, w, h):
                 return True
         return False
 
-    def _hit(self, ax, ay, aw, ah, bx, by, bw, bh):
+    def _ov(self, ax, ay, aw, ah, bx, by, bw, bh):
         return ax < bx + bw and ax + aw > bx and ay < by + bh and ay + ah > by
 
     def _die(self):
@@ -795,14 +1071,14 @@ class GameWorld(Widget):
         if self.data.get("vibration_on"):
             do_vibrate(70)
         sfx("death", self.data.get("sound_on", True))
-        c = get_color_from_hex(self.th["hazard"])
-        for _ in range(22):
-            self.parts.append(Particle(self.px + self.pw / 2, self.py + self.ph / 2, c, 0.65))
+        c = get_color_from_hex(self.th["haz"])
+        for _ in range(20):
+            self.parts.append(Particle(self.px + self.pw / 2, self.py + self.ph / 2, c, 0.6))
 
     def _win(self):
         self.won = True
         if self.data.get("vibration_on"):
-            do_vibrate(45)
+            do_vibrate(40)
         sfx("win", self.data.get("sound_on", True))
         base = 10 + self.level * 3
         sb = SKINS.get(self.data.get("selected_skin", "default"), {}).get("bonus", 1)
@@ -813,7 +1089,7 @@ class GameWorld(Widget):
             self.data["unlocked_levels"] = self.level + 1
         save_data(self.data)
         c = get_color_from_hex("#FFD93D")
-        for _ in range(30):
+        for _ in range(28):
             self.parts.append(Particle(self.px + self.pw / 2, self.py + self.ph, c, 1.0))
 
     def _parts(self, dt):
@@ -823,7 +1099,7 @@ class GameWorld(Widget):
             if p.life > 0:
                 p.x += p.vx * dt
                 p.y += p.vy * dt
-                p.vy -= 280 * dt
+                p.vy -= 260 * dt
                 alive.append(p)
         self.parts = alive
 
@@ -835,31 +1111,37 @@ class GameWorld(Widget):
             bg = get_color_from_hex(self.th["bg"])
             Color(*bg)
             Rectangle(pos=(0, 0), size=(W, H))
-            # soft dots
-            Color(1, 1, 1, 0.08)
-            random.seed(self.level * 44)
-            for _ in range(35):
+
+            # soft drawn dots
+            Color(1, 1, 1, 0.07)
+            random.seed(self.level * 51)
+            for _ in range(40):
                 sx = random.uniform(0, W)
                 sy = random.uniform(0, self.wh)
                 if 0 < sy - cam < H:
-                    Rectangle(pos=(sx, sy - cam), size=(2.5, 2.5))
+                    Rectangle(pos=(sx, sy - cam), size=(2.2, 2.2))
             random.seed()
 
             pl = get_color_from_hex(self.th["plat"])
             for (x, y, w, h) in self.plats:
-                if y + h < cam - 40 or y > cam + H + 40:
+                if y + h < cam - 30 or y > cam + H + 30:
                     continue
+                # platform body
                 Color(*pl)
                 Rectangle(pos=(x, y - cam), size=(w, h))
-                Color(min(1, pl[0] + 0.18), min(1, pl[1] + 0.18), min(1, pl[2] + 0.18), 1)
-                Rectangle(pos=(x, y + h - 4 - cam), size=(w, 4))
+                # lighter top edge (drawn look)
+                Color(min(1, pl[0] + 0.2), min(1, pl[1] + 0.2), min(1, pl[2] + 0.2), 1)
+                Rectangle(pos=(x, y + h - 3 - cam), size=(w, 3))
+                # slight darker bottom
+                Color(pl[0] * 0.7, pl[1] * 0.7, pl[2] * 0.7, 0.6)
+                Rectangle(pos=(x, y - cam), size=(w, 2))
 
-            hz = get_color_from_hex(self.th["hazard"])
+            hz = get_color_from_hex(self.th["haz"])
             for (x, y, w, h) in self.haz:
-                if y + h < cam - 20 or y > cam + H + 20:
+                if y + h < cam - 15 or y > cam + H + 15:
                     continue
                 Color(*hz)
-                n = max(2, int(w / 10))
+                n = max(2, int(w / 9))
                 sw = w / n
                 for i in range(n):
                     sx = x + i * sw
@@ -893,36 +1175,35 @@ class GameWorld(Widget):
                 Rectangle(pos=(px + 2, py + 11), size=(18, 14))
                 Color(min(1, pc[0] * 1.1), min(1, pc[1] * 1.1), min(1, pc[2] * 1.1), 1)
                 Ellipse(pos=(px + 3, py + 24), size=(16, 16))
-                Color(0.1, 0.08, 0.15, 1)
+                Color(0.12, 0.1, 0.16, 1)
                 ex = px + 10 if self.face > 0 else px + 5
                 Ellipse(pos=(ex, py + 30), size=(4, 4))
 
 
-# ===================== GAME SCREEN =====================
 class GameScreen(Screen):
     def __init__(self, **kw):
         super().__init__(**kw)
         self.level = 1
         self.data = {}
 
-        col = BoxLayout(orientation="vertical", spacing=0)
+        # CRITICAL: vertical split — game ABOVE controls, never overlap
+        col = BoxLayout(orientation="vertical", spacing=0, padding=0)
 
-        # game viewport — ALL remaining space above controls
         self.area = FloatLayout(size_hint=(1, 1))
-        self.world = GameWorld(size_hint=(1, 1))
+        self.world = GameWorld(size_hint=(1, 1), pos_hint={"x": 0, "y": 0})
         self.area.add_widget(self.world)
 
         self.info = Label(text="Lv.1", font_size=sp(14), bold=True, color=(1, 0.98, 0.95, 0.95),
-                          size_hint=(None, None), size=(dp(200), dp(28)),
+                          size_hint=(None, None), size=(dp(210), dp(28)),
                           pos_hint={"x": 0.03, "top": 0.98}, halign="left")
         self.info.bind(size=self.info.setter("text_size"))
         self.area.add_widget(self.info)
 
-        self.menu_btn = Btn(text="MENU", bg=(0.55, 0.22, 0.3, 0.92),
-                            size_hint=(None, None), size=(dp(78), dp(34)),
-                            pos_hint={"right": 0.97, "top": 0.98})
-        self.menu_btn.bind(on_press=self._menu)
-        self.area.add_widget(self.menu_btn)
+        self.mb = Btn(text="MENU", bg=(0.55, 0.22, 0.3, 0.92),
+                      size_hint=(None, None), size=(dp(76), dp(32)),
+                      pos_hint={"right": 0.97, "top": 0.98})
+        self.mb.bind(on_press=self._menu)
+        self.area.add_widget(self.mb)
 
         self.win_l = Label(text="", font_size=sp(22), bold=True, color=(1, 0.92, 0.4, 1),
                            size_hint=(None, None), size=(dp(280), dp(80)),
@@ -937,19 +1218,20 @@ class GameScreen(Screen):
                         opacity=0, disabled=True)
         self.cont.bind(on_press=self._cont)
         self.area.add_widget(self.cont)
+
         col.add_widget(self.area)
 
-        # compact control bar
-        self.ctrl = BoxLayout(size_hint=(1, None), height=dp(64),
+        # Controls — fixed bottom strip, game never draws here
+        self.ctrl = BoxLayout(size_hint=(1, None), height=dp(62),
                               padding=[dp(8), dp(6)], spacing=dp(8))
         with self.ctrl.canvas.before:
-            Color(0.12, 0.1, 0.2, 0.92)
+            Color(0.14, 0.12, 0.24, 1)
             self.cbg = Rectangle()
         self.ctrl.bind(pos=lambda *a: setattr(self.cbg, "pos", self.ctrl.pos),
                        size=lambda *a: setattr(self.cbg, "size", self.ctrl.size))
-        self.bl = Btn(text="◀", bg=(0.32, 0.28, 0.5, 1), size_hint=(0.28, 1))
+        self.bl = Btn(text="◀", bg=(0.35, 0.3, 0.55, 1), size_hint=(0.28, 1))
         self.bj = Btn(text="JUMP", bg=(0.35, 0.5, 0.9, 1), size_hint=(0.44, 1))
-        self.br = Btn(text="▶", bg=(0.32, 0.28, 0.5, 1), size_hint=(0.28, 1))
+        self.br = Btn(text="▶", bg=(0.35, 0.3, 0.55, 1), size_hint=(0.28, 1))
         self.bl.bind(on_press=lambda x: self._mv("l", True), on_release=lambda x: self._mv("l", False))
         self.br.bind(on_press=lambda x: self._mv("r", True), on_release=lambda x: self._mv("r", False))
         self.bj.bind(on_press=lambda x: self._jp())
@@ -957,6 +1239,7 @@ class GameScreen(Screen):
         self.ctrl.add_widget(self.bj)
         self.ctrl.add_widget(self.br)
         col.add_widget(self.ctrl)
+
         self.add_widget(col)
         Window.bind(on_key_down=self._kd, on_key_up=self._ku)
 
@@ -991,16 +1274,16 @@ class GameScreen(Screen):
         self.win_l.opacity = 0
         self.cont.opacity = 0
         self.cont.disabled = True
-        th = theme_for(level)
+        th = theme(level)
         self.info.text = f"Lv.{level}  {th['name']}"
-        Clock.schedule_once(lambda dt: self.world.start(level, data), 0.05)
+        Clock.schedule_once(lambda dt: self.world.start(level, data), 0.06)
 
     def on_leave(self, *a):
         self.world.stop()
 
     def _menu(self, *a):
         if self.data.get("vibration_on"):
-            do_vibrate(15)
+            do_vibrate(14)
         self.world.stop()
         self.manager.transition = SlideTransition(direction="down", duration=0.2)
         self.manager.current = "main"
@@ -1019,8 +1302,6 @@ class GameScreen(Screen):
         Clock.schedule_interval(self._chk, 0.1)
 
     def _cont(self, *a):
-        if self.data.get("vibration_on"):
-            do_vibrate(15)
         self.world.stop()
         self.manager.transition = SlideTransition(direction="down", duration=0.2)
         self.manager.current = "main"
@@ -1029,7 +1310,7 @@ class GameScreen(Screen):
 class HauselApp(App):
     def build(self):
         self.title = "HAUSEL"
-        sm = ScreenManager(transition=FadeTransition(duration=0.25))
+        sm = ScreenManager()
         sm.add_widget(LoadingScreen(name="loading"))
         sm.add_widget(MainScreen(name="main"))
         sm.add_widget(GameScreen(name="game"))
