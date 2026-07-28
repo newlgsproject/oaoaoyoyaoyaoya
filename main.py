@@ -389,7 +389,8 @@ class MainScreen(Screen):
             scroll_type=["bars", "content"]
         )
         self.shop_list = BoxLayout(
-            orientation="vertical", size_hint_y=None, spacing=dp(9), padding=[0, dp(2), 0, dp(20)]
+            orientation="vertical", size_hint_y=None, spacing=dp(9),
+            padding=[0, dp(2), 0, dp(100)]
         )
         self.shop_list.bind(minimum_height=self.shop_list.setter("height"))
         scroll.add_widget(self.shop_list)
@@ -656,10 +657,10 @@ class GameWorld(Widget):
         self.jump_buffer = 0
         self.particles = []
         self.trail_timer = 0
-        self.GRAVITY = -1100
-        self.MOVE_SPEED = 200
-        self.JUMP_FORCE = 460
-        self.MAX_FALL = -700
+        self.GRAVITY = -1050
+        self.MOVE_SPEED = 210
+        self.JUMP_FORCE = 490
+        self.MAX_FALL = -650
         self._event = None
 
     def start_level(self, level, data):
@@ -687,31 +688,64 @@ class GameWorld(Widget):
             self._event = None
 
     def _generate(self):
+        """Fair, deterministic levels — always reachable jumps."""
         self.platforms = []
         self.hazards = []
         W = max(self.width, 300)
-        self.platforms.append((W * 0.15, 50, W * 0.7, 18))
+        rng = random.Random(self.level * 7919 + 42)  # same level = same layout
+
+        # Start platform — wide and safe
+        start_w = W * 0.55
+        start_x = (W - start_w) / 2
+        self.platforms.append((start_x, 48, start_w, 18))
         self.px = W * 0.5 - self.pw / 2
-        self.py = 70
-        difficulty = 1 + (self.level - 1) * 0.07
-        num = 11 + self.level // 6
-        y = 50
-        prev_x = W * 0.3
+        self.py = 68
+
+        # How hard: early levels easy, later tighter
+        # Max vertical gap player can clear ~ 95-110 px with current jump
+        max_gap = 78 + min(self.level // 8, 18)   # 78..96
+        min_gap = 48
+        min_w = max(70, 110 - self.level // 5)    # platforms get a bit smaller
+        max_w = max(min_w + 20, 140 - self.level // 6)
+        max_shift = 55 + min(self.level // 6, 25) # horizontal offset
+
+        num = 9 + min(self.level // 4, 8)  # 9..17 platforms
+        y = 48
+        prev_x = start_x
+        prev_w = start_w
+
         for i in range(num):
-            y += random.uniform(55, 95 + difficulty * 6)
-            plat_w = random.uniform(60, 120 - min(difficulty * 2.5, 35))
-            x = prev_x + random.uniform(-(90 + difficulty * 4), 90 + difficulty * 4)
-            x = max(12, min(W - plat_w - 12, x))
+            gap = min_gap + (max_gap - min_gap) * (0.4 + 0.6 * rng.random())
+            # keep gap reachable
+            gap = min(gap, 100)
+            y += gap
+
+            plat_w = min_w + (max_w - min_w) * rng.random()
+            # stay within jump range horizontally
+            shift = (rng.random() * 2 - 1) * max_shift
+            x = prev_x + prev_w / 2 + shift - plat_w / 2
+            x = max(14, min(W - plat_w - 14, x))
+
             self.platforms.append((x, y, plat_w, 16))
-            if i > 1 and random.random() < 0.12 + min(self.level * 0.012, 0.38):
-                sx = x + random.uniform(6, max(6, plat_w - 28))
-                sw = random.uniform(18, min(36, plat_w - 8))
-                self.hazards.append((sx, y + 16, sw, 14))
+
+            # Spikes only on later platforms, and not covering whole platform
+            if i >= 3 and self.level >= 3 and rng.random() < min(0.08 + self.level * 0.01, 0.28):
+                sw = min(28, plat_w * 0.35)
+                sx = x + (plat_w - sw) * rng.random()
+                # keep edges safe so player can land on sides
+                if sx > x + 8 and sx + sw < x + plat_w - 8:
+                    self.hazards.append((sx, y + 16, sw, 12))
+
             prev_x = x
-        self.world_height = y + 200
-        gy = y + 75
-        self.platforms.append((W * 0.2, gy, W * 0.6, 18))
-        self.goal = (W * 0.32, gy + 18, W * 0.36, 48)
+            prev_w = plat_w
+
+        # Goal — wide safe platform
+        y += 70
+        goal_w = W * 0.5
+        goal_x = (W - goal_w) / 2
+        self.platforms.append((goal_x, y, goal_w, 18))
+        self.goal = (goal_x + goal_w * 0.15, y + 18, goal_w * 0.7, 50)
+        self.world_height = y + 220
 
     def _update(self, dt):
         if not self.alive:
@@ -915,9 +949,14 @@ class GameScreen(Screen):
         super().__init__(**kwargs)
         self.level = 1
         self.data = {}
-        self.root_layout = FloatLayout()
+
+        # Vertical layout: game area on top, controls fixed at bottom
+        main_col = BoxLayout(orientation="vertical", spacing=0, padding=0)
+
+        # Game area (world + HUD)
+        self.game_area = FloatLayout(size_hint=(1, 1))
         self.world = GameWorld(size_hint=(1, 1))
-        self.root_layout.add_widget(self.world)
+        self.game_area.add_widget(self.world)
 
         self.info_label = Label(
             text="Level 1", font_size=sp(15), bold=True, color=(0.95, 0.93, 0.9, 0.95),
@@ -925,7 +964,7 @@ class GameScreen(Screen):
             pos_hint={"x": 0.03, "top": 0.97}, halign="left"
         )
         self.info_label.bind(size=self.info_label.setter("text_size"))
-        self.root_layout.add_widget(self.info_label)
+        self.game_area.add_widget(self.info_label)
 
         self.pause_btn = PixelButton(
             text="MENU", bg=(0.5, 0.22, 0.28, 0.9),
@@ -933,32 +972,35 @@ class GameScreen(Screen):
             pos_hint={"right": 0.97, "top": 0.97}
         )
         self.pause_btn.bind(on_press=self._menu)
-        self.root_layout.add_widget(self.pause_btn)
+        self.game_area.add_widget(self.pause_btn)
 
         self.win_label = Label(
             text="", font_size=sp(22), bold=True, color=(1, 0.9, 0.4, 1),
             size_hint=(None, None), size=(dp(280), dp(80)),
-            pos_hint={"center_x": 0.5, "center_y": 0.58},
+            pos_hint={"center_x": 0.5, "center_y": 0.55},
             halign="center", opacity=0
         )
         self.win_label.bind(size=self.win_label.setter("text_size"))
-        self.root_layout.add_widget(self.win_label)
+        self.game_area.add_widget(self.win_label)
 
         self.continue_btn = PixelButton(
             text="CONTINUE", bg=(0.25, 0.65, 0.4, 1),
             size_hint=(None, None), size=(dp(160), dp(48)),
-            pos_hint={"center_x": 0.5, "center_y": 0.4},
+            pos_hint={"center_x": 0.5, "center_y": 0.38},
             opacity=0, disabled=True
         )
         self.continue_btn.bind(on_press=self._after_win)
-        self.root_layout.add_widget(self.continue_btn)
+        self.game_area.add_widget(self.continue_btn)
 
+        main_col.add_widget(self.game_area)
+
+        # Controls — always below the game world
         self.ctrl = BoxLayout(
-            orientation="horizontal", size_hint=(1, None), height=dp(74),
-            pos_hint={"x": 0, "y": 0}, padding=[dp(10), dp(10)], spacing=dp(10)
+            orientation="horizontal", size_hint=(1, None), height=dp(78),
+            padding=[dp(10), dp(10)], spacing=dp(10)
         )
         with self.ctrl.canvas.before:
-            Color(0.06, 0.05, 0.1, 0.5)
+            Color(0.08, 0.07, 0.14, 1)
             self.ctrl_bg = Rectangle(pos=self.ctrl.pos, size=self.ctrl.size)
         self.ctrl.bind(pos=lambda *a: setattr(self.ctrl_bg, "pos", self.ctrl.pos),
                        size=lambda *a: setattr(self.ctrl_bg, "size", self.ctrl.size))
@@ -972,8 +1014,9 @@ class GameScreen(Screen):
         self.ctrl.add_widget(self.btn_left)
         self.ctrl.add_widget(self.btn_jump)
         self.ctrl.add_widget(self.btn_right)
-        self.root_layout.add_widget(self.ctrl)
-        self.add_widget(self.root_layout)
+        main_col.add_widget(self.ctrl)
+
+        self.add_widget(main_col)
         Window.bind(on_key_down=self._kd, on_key_up=self._ku)
 
     def _move(self, side, state):
