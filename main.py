@@ -488,14 +488,17 @@ class MainScreen(Screen):
         for b in (self.bs, self.bp, self.bt):
             b.color = (0.7, 0.65, 0.85, 1)
         if tab == "shop":
+            self.wshop.size_hint = (1, 1)
             self.body.add_widget(self.wshop)
             self.bs.color = (1, 0.9, 0.4, 1)
             self._rs()
         elif tab == "play":
+            self.wplay.size_hint = (1, 1)
             self.body.add_widget(self.wplay)
             self.bp.color = (0.5, 1, 0.7, 1)
             self._rp()
         else:
+            self.wset.size_hint = (1, 1)
             self.body.add_widget(self.wset)
             self.bt.color = (0.75, 0.85, 1, 1)
             self.data = load_data()
@@ -515,19 +518,27 @@ class MainScreen(Screen):
         root.add_widget(head)
 
         sc = ScrollView(size_hint=(1, 1), do_scroll_x=False, bar_width=dp(4))
+        self.shop_scroll_box = BoxLayout(orientation="vertical", size_hint_y=None, spacing=dp(10),
+                                         padding=[0, 0, 0, dp(24)])
+        self.shop_scroll_box.bind(minimum_height=self.shop_scroll_box.setter("height"))
         self.sbox = GridLayout(cols=2, size_hint_y=None, spacing=dp(10),
-                               padding=[dp(4), dp(4), dp(4), dp(16)], row_default_height=dp(130),
+                               padding=[dp(4), dp(4)], row_default_height=dp(130),
                                row_force_default=True)
         self.sbox.bind(minimum_height=self.sbox.setter("height"))
-        sc.add_widget(self.sbox)
-        root.add_widget(sc)
+        self.shop_scroll_box.add_widget(self.sbox)
 
-        promo_box = BoxLayout(orientation="vertical", size_hint=(1, None), height=dp(96), spacing=dp(4))
-        promo_box.add_widget(OutlinedLabel(text="Промокод", font_size=sp(13), size_hint=(1, None), height=dp(20)))
-        prow = BoxLayout(size_hint=(1, None), height=dp(42), spacing=dp(8))
+        # Promo at the END of scroll — always last item in shop
+        promo_box = BoxLayout(orientation="vertical", size_hint=(1, None), height=dp(110), spacing=dp(6))
+        with promo_box.canvas.before:
+            Color(0.25, 0.5, 0.95, 1)
+            pr = RoundedRectangle(radius=[dp(14)])
+        promo_box.bind(pos=lambda *a, r=pr, b=promo_box: setattr(r, "pos", b.pos) or setattr(r, "size", b.size),
+                       size=lambda *a, r=pr, b=promo_box: setattr(r, "pos", b.pos) or setattr(r, "size", b.size))
+        promo_box.add_widget(OutlinedLabel(text="Промокод", font_size=sp(14), size_hint=(1, None), height=dp(22)))
+        prow = BoxLayout(size_hint=(1, None), height=dp(42), spacing=dp(8), padding=[dp(8), 0])
         self.code_in = TextInput(
             hint_text="Введи код...", multiline=False, font_size=sp(14),
-            size_hint=(0.55, 1), background_color=(0.2, 0.45, 0.85, 1),
+            size_hint=(0.55, 1), background_color=(0.15, 0.35, 0.75, 1),
             foreground_color=(1, 1, 1, 1), cursor_color=(1, 1, 1, 1),
             padding=[dp(10), dp(10)]
         )
@@ -538,9 +549,12 @@ class MainScreen(Screen):
         prow.add_widget(okb)
         promo_box.add_widget(prow)
         self.code_msg = OutlinedLabel(text="", font_size=sp(12), size_hint=(1, None), height=dp(22),
-                                      color=(1, 0.9, 0.4, 1))
+                                      color=(1, 0.95, 0.4, 1))
         promo_box.add_widget(self.code_msg)
-        root.add_widget(promo_box)
+        self.shop_scroll_box.add_widget(promo_box)
+
+        sc.add_widget(self.shop_scroll_box)
+        root.add_widget(sc)
         return root
 
     def _rs(self):
@@ -849,7 +863,7 @@ class MainScreen(Screen):
         self.sw_vibration_on = Switch(active=True, size_hint=(None, None), size=(0, 0), opacity=0)
 
         root.add_widget(Widget(size_hint=(1, 1)))
-        info = OutlinedLabel(text="HAUSEL  v0.6\nby LGStudio", font_size=sp(12),
+        info = OutlinedLabel(text="HAUSEL  v0.7\nby LGStudio", font_size=sp(12),
                              size_hint=(1, None), height=dp(40), color=(1, 1, 1, 0.85))
         root.add_widget(info)
         return root
@@ -1054,16 +1068,19 @@ class GameWorld(Widget):
         self.parts = []
         self.ttrail = 0
         self.was_g = False
-        self.G = -1000
-        self.SPEED = 230
-        self.JUMP = 540
-        self.MAXFALL = -620
+        self.G = -900
+        self.SPEED = 240
+        self.JUMP = 560
+        self.MAXFALL = -580
 
     def start(self, level, data):
         self._init()
         self.level = level
         self.data = data
         self.th = theme(level)
+        self.left = False
+        self.right = False
+        self.jpress = False
         self._build()
         self._draw()
         if self._ev:
@@ -1089,14 +1106,14 @@ class GameWorld(Widget):
 
         # Vertical spacing: easy early, a bit tighter later but always jumpable
         # jump height ~ 540^2 / 2000 ≈ 146 px
-        gap_base = 58
-        gap_extra = min(self.level // 8, 18)
+        gap_base = 42
+        gap_extra = min(self.level // 12, 12)
         n = 12 + min(self.level // 4, 10)  # more platforms, fuller field
 
         y = 30.0
         for i in range(n):
             gap = gap_base + gap_extra * (0.5 + 0.5 * rng.random())
-            gap = min(gap, 88)  # never too high
+            gap = min(gap, 62)  # always reachable
             y += gap
 
             # Platform width: often wide, sometimes split feel
@@ -1129,8 +1146,8 @@ class GameWorld(Widget):
                 self.plats.append((x2, y, w2, 12))
 
         # Goal — wide top platform
-        y += 50
-        gw = W * 0.7
+        y += 40
+        gw = W * 0.75
         gx = (W - gw) / 2
         self.plats.append((gx, y, gw, 14))
         self.goal = (gx + gw * 0.25, y + 14, gw * 0.5, 50)
@@ -1210,28 +1227,24 @@ class GameWorld(Widget):
         self._draw()
 
     def _collide_oneway(self):
-        """
-        ONE-WAY PLATFORMS:
-        - Going up (vy > 0): pass through, no collision
-        - Going down (vy <= 0): land on top, cannot fall through
-        """
-        if self.vy > 0:
-            return  # flying up — ignore platforms
-
+        """One-way: pass through from below, solid from above."""
+        if self.vy > 40:  # clearly going up
+            return
         feet = self.py
+        best = None
+        cx = self.px + self.pw / 2
         for (x, y, w, h) in self.plats:
-            # only care about top surface
             top = y + h
-            # player horizontally overlaps platform
-            if self.px + self.pw <= x or self.px >= x + w:
+            # horizontal overlap (center of player over platform)
+            if cx < x - 2 or cx > x + w + 2:
                 continue
-            # was above or at surface, now would go through
-            # land if feet are near the top surface
-            if feet <= top and feet >= top - abs(self.vy) * 0.05 - 8:
-                # only if coming from above (previous feet were roughly at or above)
-                self.py = top
-                self.vy = 0
-                self.ground = True
+            if feet <= top + 3 and feet >= top - 16:
+                if best is None or top > best:
+                    best = top
+        if best is not None and self.vy <= 20:
+            self.py = best
+            self.vy = 0
+            self.ground = True
 
     def _hazard(self):
         for (x, y, w, h) in self.haz:
@@ -1399,18 +1412,23 @@ class GameScreen(Screen):
         col.add_widget(self.area)
 
         # Controls — fixed bottom strip, game never draws here
-        self.ctrl = BoxLayout(size_hint=(1, None), height=dp(62),
+        self.ctrl = BoxLayout(size_hint=(1, None), height=dp(72),
                               padding=[dp(8), dp(6)], spacing=dp(8))
         with self.ctrl.canvas.before:
             Color(0.20, 0.45, 0.90, 1)
             self.cbg = Rectangle()
         self.ctrl.bind(pos=lambda *a: setattr(self.cbg, "pos", self.ctrl.pos),
                        size=lambda *a: setattr(self.cbg, "size", self.ctrl.size))
-        self.bl = Btn(text="◀", bg=(0.35, 0.3, 0.55, 1), size_hint=(0.28, 1))
-        self.bj = Btn(text="JUMP", bg=(0.35, 0.5, 0.9, 1), size_hint=(0.44, 1))
-        self.br = Btn(text="▶", bg=(0.35, 0.3, 0.55, 1), size_hint=(0.28, 1))
-        self.bl.bind(on_press=lambda x: self._mv("l", True), on_release=lambda x: self._mv("l", False))
-        self.br.bind(on_press=lambda x: self._mv("r", True), on_release=lambda x: self._mv("r", False))
+        self.bl = Btn(text="<", bg=(0.4, 0.45, 0.95, 1), size_hint=(0.28, 1))
+        self.bj = Btn(text="JUMP", bg=(1.0, 0.75, 0.2, 1), size_hint=(0.44, 1))
+        self.br = Btn(text=">", bg=(0.4, 0.45, 0.95, 1), size_hint=(0.28, 1))
+        self.bl.font_size = sp(28)
+        self.br.font_size = sp(28)
+        self.bj.font_size = sp(18)
+        self.bl.bind(on_press=lambda x: self._mv("l", True), on_release=lambda x: self._mv("l", False),
+                     on_touch_up=self._touch_up_ctrl)
+        self.br.bind(on_press=lambda x: self._mv("r", True), on_release=lambda x: self._mv("r", False),
+                     on_touch_up=self._touch_up_ctrl)
         self.bj.bind(on_press=lambda x: self._jp())
         self.ctrl.add_widget(self.bl)
         self.ctrl.add_widget(self.bj)
@@ -1428,6 +1446,15 @@ class GameScreen(Screen):
 
     def _jp(self):
         self.world.jpress = True
+
+    def _touch_up_ctrl(self, inst, touch):
+        # ensure movement stops when finger lifts anywhere
+        if not inst.collide_point(*touch.pos):
+            if inst is self.bl:
+                self.world.left = False
+            elif inst is self.br:
+                self.world.right = False
+        return False
 
     def _kd(self, w, key, sc, code, mod):
         if self.manager.current != "game":
@@ -1451,6 +1478,9 @@ class GameScreen(Screen):
         self.win_l.opacity = 0
         self.cont.opacity = 0
         self.cont.disabled = True
+        self.world.left = False
+        self.world.right = False
+        self.world.jpress = False
         th = theme(level)
         self.info.text = f"Lv.{level}  {th['name']}"
         Clock.schedule_once(lambda dt: self.world.start(level, data), 0.06)
